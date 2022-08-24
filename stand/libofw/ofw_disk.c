@@ -39,7 +39,7 @@ __FBSDID("$FreeBSD$");
 #include <stand.h>
 #include <sys/disk.h>
 
-#include "bootstrap.h"
+#include "disk.h"
 #include "libofw.h"
 
 static int	ofwd_init(void);
@@ -59,6 +59,8 @@ struct devsw ofwdisk = {
 	.dv_close = ofwd_close,
 	.dv_ioctl = ofwd_ioctl,
 	.dv_print = ofwd_print,
+	.dv_cleanup = nullsys,
+	.dv_fmtdev = disk_fmtdev,
 };
 
 /*

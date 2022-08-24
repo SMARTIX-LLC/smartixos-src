@@ -30,6 +30,7 @@ __FBSDID("$FreeBSD$");
 #include <stdarg.h>
 #include "bootstrap.h"
 #include "host_syscall.h"
+#include "disk.h"
 
 static int hostdisk_init(void);
 static int hostdisk_strategy(void *devdata, int flag, daddr_t dblk,
@@ -48,6 +49,8 @@ struct devsw hostdisk = {
 	.dv_close = hostdisk_close,
 	.dv_ioctl = hostdisk_ioctl,
 	.dv_print = hostdisk_print,
+	.dv_cleanup = nullsys,
+	.dv_fmtdev = disk_fmtdev,
 };
 
 static int
