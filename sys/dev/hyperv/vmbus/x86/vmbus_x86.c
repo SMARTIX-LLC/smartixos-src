@@ -29,7 +29,6 @@
 /*
  * VM Bus Driver Implementation
  */
-
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
@@ -55,6 +54,7 @@ __FBSDID("$FreeBSD$");
 #include <machine/metadata.h>
 #include <machine/md_var.h>
 #include <machine/resource.h>
+#include <machine/intr_machdep.h>
 #include <contrib/dev/acpica/include/acpi.h>
 #include <dev/acpica/acpivar.h>
 
@@ -64,13 +64,15 @@ __FBSDID("$FreeBSD$");
 #include <dev/hyperv/vmbus/vmbus_reg.h>
 #include <dev/hyperv/vmbus/vmbus_var.h>
 #include <dev/hyperv/vmbus/vmbus_chanvar.h>
-#include <dev/hyperv/vmbus/aarch64/hyperv_machdep.h>
-#include <dev/hyperv/vmbus/aarch64/hyperv_reg.h>
+#include <x86/include/apicvar.h>
+#include <dev/hyperv/vmbus/x86/hyperv_machdep.h>
+#include <dev/hyperv/vmbus/x86/hyperv_reg.h>
 #include "acpi_if.h"
 #include "pcib_if.h"
 #include "vmbus_if.h"
 
-static int vmbus_handle_intr_new(void *);
+extern inthand_t IDTVEC(vmbus_isr), IDTVEC(vmbus_isr_pti);
+#define VMBUS_ISR_ADDR trunc_page((uintptr_t)IDTVEC(vmbus_isr_pti))
 
 void vmbus_handle_timer_intr1(struct vmbus_message *msg_base,
     struct trapframe *frame);
@@ -83,56 +85,85 @@ void
 vmbus_handle_timer_intr1(struct vmbus_message *msg_base,
     struct trapframe *frame)
 {
-	// do nothing for arm64, as we are using generic timer
+	volatile struct vmbus_message *msg;
+	msg = msg_base + VMBUS_SINT_TIMER;
+	if (msg->msg_type == HYPERV_MSGTYPE_TIMER_EXPIRED) {
+		msg->msg_type = HYPERV_MSGTYPE_NONE;
+		vmbus_et_intr(frame);
+		/*
+		 * Make sure the write to msg_type (i.e. set to
+		 * HYPERV_MSGTYPE_NONE) happens before we read the
+		 * msg_flags and EOMing. Otherwise, the EOMing will
+		 * not deliver any more messages since there is no
+		 * empty slot
+		 *
+		 * NOTE:
+		 * mb() is used here, since atomic_thread_fence_seq_cst()
+		 * will become compiler fence on UP kernel.
+		 */
+		mb();
+		if (msg->msg_flags & VMBUS_MSGFLAG_PENDING) {
+			/*
+			 * This will cause message queue rescan to possibly
+			 * deliver another msg from the hypervisor
+			 */
+			wrmsr(MSR_HV_EOM, 0);
+		}
+	}
 	return;
-}
-
-static int
-vmbus_handle_intr_new(void *arg)
-{
-	vmbus_handle_intr(NULL);
-	return (FILTER_HANDLED);
 }
 
 void
 vmbus_synic_setup1(void *xsc)
 {
+	struct vmbus_softc *sc = xsc;
+	uint32_t sint;
+	uint64_t val, orig;
+
+	sint = MSR_HV_SINT0 + VMBUS_SINT_TIMER;
+	orig = RDMSR(sint);
+	val = sc->vmbus_idtvec | MSR_HV_SINT_AUTOEOI |
+	    (orig & MSR_HV_SINT_RSVD_MASK);
+	WRMSR(sint, val);
 	return;
 }
 
 void
 vmbus_synic_teardown1(void)
 {
+	uint64_t orig;
+	uint32_t sint;
+
+	sint = MSR_HV_SINT0 + VMBUS_SINT_TIMER;
+	orig = RDMSR(sint);
+	WRMSR(sint, orig | MSR_HV_SINT_MASKED);
 	return;
 }
 
 int
 vmbus_setup_intr1(struct vmbus_softc *sc)
 {
-	int err;
-	struct intr_map_data_acpi *irq_data;
-	device_t dev;
+#if defined(__amd64__) && defined(KLD_MODULE)
+	pmap_pti_add_kva(VMBUS_ISR_ADDR, VMBUS_ISR_ADDR + PAGE_SIZE, true);
+#endif
 
-	dev =  devclass_get_device(devclass_find("vmbus_res"), 0);
-	sc->ires = bus_alloc_resource_any(dev,
-	    SYS_RES_IRQ, &sc->vector, RF_ACTIVE | RF_SHAREABLE);
-	if (sc->ires == NULL) {
-		device_printf(sc->vmbus_dev, "bus_alloc_resouce_any failed\n");
-		return (ENXIO);
-	} else {
-		device_printf(sc->vmbus_dev, "irq 0x%lx, vector %d end 0x%lx\n",
-		    (uint64_t)rman_get_start(sc->ires), sc->vector,
-		    (uint64_t)rman_get_end(sc->ires));
+	/*
+	 * All Hyper-V ISR required resources are setup, now let's find a
+	 * free IDT vector for Hyper-V ISR and set it up.
+	 */
+	sc->vmbus_idtvec = lapic_ipi_alloc(
+	    pti ? IDTVEC(vmbus_isr_pti) : IDTVEC(vmbus_isr));
+	if (sc->vmbus_idtvec < 0) {
+#if defined(__amd64__) && defined(KLD_MODULE)
+		pmap_pti_remove_kva(VMBUS_ISR_ADDR, VMBUS_ISR_ADDR + PAGE_SIZE);
+#endif
+		device_printf(sc->vmbus_dev, "cannot find free IDT vector\n");
+		return ENXIO;
 	}
-	err = bus_setup_intr(sc->vmbus_dev, sc->ires, INTR_TYPE_MISC,
-	    vmbus_handle_intr_new, NULL, sc, &sc->icookie);
-	if (err) {
-		device_printf(sc->vmbus_dev, "failed to setup IRQ %d\n", err);
-		return (err);
+	if (bootverbose) {
+		device_printf(sc->vmbus_dev, "vmbus IDT vector %d\n",
+		    sc->vmbus_idtvec);
 	}
-	irq_data = (struct intr_map_data_acpi *)rman_get_virtual(sc->ires);
-	device_printf(sc->vmbus_dev, "the irq %u\n", irq_data->irq);
-	sc->vmbus_idtvec = irq_data->irq;
 	return 0;
 }
 
@@ -141,8 +172,14 @@ vmbus_intr_teardown1(struct vmbus_softc *sc)
 {
 	int cpu;
 
-	sc->vmbus_idtvec = -1;
-	bus_teardown_intr(sc->vmbus_dev, sc->ires, sc->icookie);
+	if (sc->vmbus_idtvec >= 0) {
+		lapic_ipi_free(sc->vmbus_idtvec);
+		sc->vmbus_idtvec = -1;
+	}
+
+#if defined(__amd64__) && defined(KLD_MODULE)
+	pmap_pti_remove_kva(VMBUS_ISR_ADDR, VMBUS_ISR_ADDR + PAGE_SIZE);
+#endif
 
 	CPU_FOREACH(cpu) {
 		if (VMBUS_PCPU_GET(sc, event_tq, cpu) != NULL) {
