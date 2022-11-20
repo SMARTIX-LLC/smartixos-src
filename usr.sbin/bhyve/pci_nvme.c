@@ -688,6 +688,7 @@ pci_nvme_init_nsdata(struct pci_nvme_softc *sc,
 static void
 pci_nvme_init_logpages(struct pci_nvme_softc *sc)
 {
+	__uint128_t power_cycles = 1;
 
 	memset(&sc->err_log, 0, sizeof(sc->err_log));
 	memset(&sc->health_log, 0, sizeof(sc->health_log));
@@ -707,6 +708,9 @@ pci_nvme_init_logpages(struct pci_nvme_softc *sc)
 	sc->fw_log.afi = (1 << NVME_FIRMWARE_PAGE_AFI_SLOT_SHIFT);
 	memcpy(&sc->fw_log.revision[0], sc->ctrldata.fr,
 	    sizeof(sc->fw_log.revision[0]));
+
+	memcpy(&sc->health_log.power_cycles, &power_cycles,
+	    sizeof(sc->health_log.power_cycles));
 }
 
 static void
@@ -1754,6 +1758,7 @@ nvme_feature_temperature(struct pci_nvme_softc *sc,
 	uint8_t		tmpsel; /* Threshold Temperature Select */
 	uint8_t		thsel;  /* Threshold Type Select */
 	bool		set_crit = false;
+	bool		report_crit;
 
 	tmpth  = command->cdw11 & 0xffff;
 	tmpsel = (command->cdw11 >> 16) & 0xf;
@@ -1781,10 +1786,12 @@ nvme_feature_temperature(struct pci_nvme_softc *sc,
 		    ~NVME_CRIT_WARN_ST_TEMPERATURE;
 	pthread_mutex_unlock(&sc->mtx);
 
-	if (set_crit)
+	report_crit = sc->feat[NVME_FEAT_ASYNC_EVENT_CONFIGURATION].cdw11 &
+	    NVME_CRIT_WARN_ST_TEMPERATURE;
+
+	if (set_crit && report_crit)
 		pci_nvme_aen_post(sc, PCI_NVME_AE_TYPE_SMART,
 		    sc->health_log.critical_warning);
-
 
 	DPRINTF("%s: set_crit=%c critical_warning=%#x status=%#x", __func__, set_crit ? 'T':'F', sc->health_log.critical_warning, compl->status);
 }
@@ -1845,7 +1852,8 @@ nvme_opc_set_features(struct pci_nvme_softc *sc, struct nvme_command *command,
 {
 	struct nvme_feature_obj *feat;
 	uint32_t nsid = command->nsid;
-	uint8_t fid = command->cdw10 & 0xFF;
+	uint8_t fid = NVMEV(NVME_FEAT_SET_FID, command->cdw10);
+	bool sv = NVMEV(NVME_FEAT_SET_SV, command->cdw10);
 
 	DPRINTF("%s: Feature ID 0x%x (%s)", __func__, fid, nvme_fid_to_name(fid));
 
@@ -1854,6 +1862,13 @@ nvme_opc_set_features(struct pci_nvme_softc *sc, struct nvme_command *command,
 		pci_nvme_status_genc(&compl->status, NVME_SC_INVALID_FIELD);
 		return (1);
 	}
+
+	if (sv) {
+		pci_nvme_status_tc(&compl->status, NVME_SCT_COMMAND_SPECIFIC,
+		    NVME_SC_FEATURE_NOT_SAVEABLE);
+		return (1);
+	}
+
 	feat = &sc->feat[fid];
 
 	if (feat->namespace_specific && (nsid == NVME_GLOBAL_NAMESPACE_TAG)) {
@@ -1873,6 +1888,11 @@ nvme_opc_set_features(struct pci_nvme_softc *sc, struct nvme_command *command,
 
 	if (feat->set)
 		feat->set(sc, feat, command, compl);
+	else {
+		pci_nvme_status_tc(&compl->status, NVME_SCT_COMMAND_SPECIFIC,
+		    NVME_SC_FEATURE_NOT_CHANGEABLE);
+		return (1);
+	}
 
 	DPRINTF("%s: status=%#x cdw11=%#x", __func__, compl->status, command->cdw11);
 	if (compl->status == NVME_SC_SUCCESS) {
@@ -2218,8 +2238,8 @@ pci_nvme_out_of_range(struct pci_nvme_blockstore *nvstore, uint64_t slba,
 }
 
 static int
-pci_nvme_append_iov_req(struct pci_nvme_softc *sc, struct pci_nvme_ioreq *req,
-	uint64_t gpaddr, size_t size, int do_write, uint64_t offset)
+pci_nvme_append_iov_req(struct pci_nvme_softc *sc __unused,
+    struct pci_nvme_ioreq *req, uint64_t gpaddr, size_t size, uint64_t offset)
 {
 	int iovidx;
 	bool range_is_contiguous;
@@ -2450,8 +2470,7 @@ nvme_write_read_blockif(struct pci_nvme_softc *sc,
 	uint16_t status = NVME_NO_STATUS;
 
 	size = MIN(PAGE_SIZE - (prp1 % PAGE_SIZE), bytes);
-	if (pci_nvme_append_iov_req(sc, req, prp1,
-	    size, is_write, offset)) {
+	if (pci_nvme_append_iov_req(sc, req, prp1, size, offset)) {
 		err = -1;
 		goto out;
 	}
@@ -2463,8 +2482,7 @@ nvme_write_read_blockif(struct pci_nvme_softc *sc,
 		;
 	} else if (bytes <= PAGE_SIZE) {
 		size = bytes;
-		if (pci_nvme_append_iov_req(sc, req, prp2,
-		    size, is_write, offset)) {
+		if (pci_nvme_append_iov_req(sc, req, prp2, size, offset)) {
 			err = -1;
 			goto out;
 		}
@@ -2490,8 +2508,8 @@ nvme_write_read_blockif(struct pci_nvme_softc *sc,
 
 			size = MIN(bytes, PAGE_SIZE);
 
-			if (pci_nvme_append_iov_req(sc, req, *prp_list,
-			    size, is_write, offset)) {
+			if (pci_nvme_append_iov_req(sc, req, *prp_list, size,
+			    offset)) {
 				err = -1;
 				goto out;
 			}

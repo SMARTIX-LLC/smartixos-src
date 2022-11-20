@@ -205,7 +205,6 @@ __DEFAULT_NO_OPTIONS = \
     DTRACE_TESTS \
     EXPERIMENTAL \
     HESIOD \
-    LOADER_FIREWIRE \
     LOADER_VERBOSE \
     LOADER_VERIEXEC_PASS_MANIFEST \
     LLVM_BINUTILS \
@@ -332,8 +331,7 @@ BROKEN_OPTIONS+=CXGBETOOL
 BROKEN_OPTIONS+=MLX5TOOL
 .endif
 
-# HyperV is currently x86-only
-.if ${__T} != "amd64" && ${__T} != "i386"
+.if ${__T} != "amd64" && ${__T} != "i386" && ${__T} != "aarch64"
 BROKEN_OPTIONS+=HYPERV
 .endif
 
@@ -348,6 +346,11 @@ BROKEN_OPTIONS+=NVME
 __DEFAULT_YES_OPTIONS+=OPENMP
 .else
 __DEFAULT_NO_OPTIONS+=OPENMP
+.endif
+
+# libc++ requires C++20
+.if !${COMPILER_FEATURES:Mc++20}
+BROKEN_OPTIONS+=CXX
 .endif
 
 .include <bsd.mkopt.mk>
@@ -381,6 +384,9 @@ MK_KERBEROS_SUPPORT:=	no
 
 .if ${MK_CXX} == "no"
 MK_CLANG:=	no
+MK_LLD:=	no
+MK_LLDB:=	no
+MK_LLVM_BINUTILS:= no
 MK_GOOGLETEST:=	no
 MK_OFED:=	no
 MK_OPENMP:=	no
