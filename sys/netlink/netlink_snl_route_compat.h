@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2003-2003
- *	Fraunhofer Institute for Open Communication Systems (FhG Fokus).
- * 	All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
- * Author: Hartmut Brandt <harti@freebsd.org>
+ * Copyright (c) 2023 Alexander V. Chernikov <melifaro@FreeBSD.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -17,7 +15,7 @@
  * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
  * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
  * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
  * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
@@ -25,30 +23,31 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $Begemot: libunimsg/netnatm/misc/unimsg_common.c,v 1.3 2004/07/08 08:22:03 brandt Exp $
  */
+#ifndef	_NETLINK_NETLINK_SNL_ROUTE_COMPAT_H_
+#define	_NETLINK_NETLINK_SNL_ROUTE_COMPAT_H_
 
-#include <netnatm/unimsg.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 
 /*
- * Make sure there is enough space in front of the data for
- * len bytes, and update the read pointer.
+ * This file contains netlink-compatible definitions from the
+ * net/route.h header.
  */
-int
-uni_msg_prepend(struct uni_msg *msg, size_t len)
-{
-	size_t need;
+#define	NETLINK_COMPAT
 
-	if (uni_msg_leading(msg) >= len) {
-		msg->b_rptr -= len;
-		return (0);
-	}
-	need = len - uni_msg_leading(msg);
-	if (uni_msg_ensure(msg, need))
-		return (-1);
-	memcpy(msg->b_rptr + need, msg->b_rptr, uni_msg_len(msg));
-	msg->b_rptr += need - len;
-	msg->b_wptr += need;
-	return (0);
-}
+#include <net/route.h>
+
+#define	RTSOCK_RTM_ADD		0x1
+#define	RTSOCK_RTM_DELETE	0x2
+#define	RTSOCK_RTM_CHANGE	0x3
+#define	RTSOCK_RTM_GET		0x4
+#define	RTSOCK_RTM_NEWADDR	0xc
+#define	RTSOCK_RTM_DELADDR	0xd
+#define	RTSOCK_RTM_IFINFO	0xe
+#define	RTSOCK_RTM_NEWMADDR	0xf
+#define	RTSOCK_RTM_DELMADDR	0x10
+#define	RTSOCK_RTM_IFANNOUNCE	0x11
+#define	RTSOCK_RTM_IEEE80211	0x12
+
+#endif
