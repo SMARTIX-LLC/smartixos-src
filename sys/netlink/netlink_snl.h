@@ -44,7 +44,6 @@
 #include <sys/socket.h>
 #include <netlink/netlink.h>
 
-
 #define _roundup2(x, y)         (((x)+((y)-1))&(~((y)-1)))
 
 #define NETLINK_ALIGN_SIZE      sizeof(uint32_t)
@@ -258,6 +257,14 @@ snl_send(struct snl_state *ss, void *data, int sz)
 	return (send(ss->fd, data, sz, 0) == sz);
 }
 
+static inline bool
+snl_send_message(struct snl_state *ss, struct nlmsghdr *hdr)
+{
+	ssize_t sz = NLMSG_ALIGN(hdr->nlmsg_len);
+
+	return (send(ss->fd, hdr, sz, 0) == sz);
+}
+
 static inline uint32_t
 snl_get_seq(struct snl_state *ss)
 {
@@ -298,24 +305,13 @@ snl_read_message(struct snl_state *ss)
 static inline struct nlmsghdr *
 snl_read_reply(struct snl_state *ss, uint32_t nlmsg_seq)
 {
-	while (true) {
-		struct nlmsghdr *hdr = snl_read_message(ss);
-		if (hdr == NULL)
-			break;
+	struct nlmsghdr *hdr;
+
+	while ((hdr = snl_read_message(ss)) != NULL) {
 		if (hdr->nlmsg_seq == nlmsg_seq)
 			return (hdr);
 	}
 
-	return (NULL);
-}
-
-static inline struct nlmsghdr *
-snl_get_reply(struct snl_state *ss, struct nlmsghdr *hdr)
-{
-	uint32_t nlmsg_seq = hdr->nlmsg_seq;
-
-	if (snl_send(ss, hdr, hdr->nlmsg_len))
-		return (snl_read_reply(ss, nlmsg_seq));
 	return (NULL);
 }
 
@@ -391,18 +387,25 @@ snl_parse_attrs(struct snl_state *ss, struct nlmsghdr *hdr, int hdrlen,
 	return (snl_parse_attrs_raw(ss, nla_head, len, ps, pslen, target));
 }
 
-static inline bool
-snl_parse_header(struct snl_state *ss, void *hdr, int len,
-    const struct snl_hdr_parser *parser, void *target)
+static inline void
+snl_parse_fields(struct snl_state *ss, struct nlmsghdr *hdr, int hdrlen __unused,
+    const struct snl_field_parser *ps, int pslen, void *target)
 {
-	/* Extract fields first (if any) */
-	for (int i = 0; i < parser->fp_size; i++) {
-		const struct snl_field_parser *fp = &parser->fp[i];
+	for (int i = 0; i < pslen; i++) {
+		const struct snl_field_parser *fp = &ps[i];
 		void *src = (char *)hdr + fp->off_in;
 		void *dst = (char *)target + fp->off_out;
 
 		fp->cb(ss, src, dst);
 	}
+}
+
+static inline bool
+snl_parse_header(struct snl_state *ss, void *hdr, int len,
+    const struct snl_hdr_parser *parser, void *target)
+{
+	/* Extract fields first (if any) */
+	snl_parse_fields(ss, hdr, parser->hdr_off, parser->fp, parser->fp_size, target);
 
 	struct nlattr *nla_head = (struct nlattr *)(void *)((char *)hdr + parser->hdr_off);
 	bool result = snl_parse_attrs_raw(ss, nla_head, len - parser->hdr_off,
@@ -470,6 +473,34 @@ snl_attr_get_uint64(struct snl_state *ss __unused, struct nlattr *nla,
 		return (true);
 	}
 	return (false);
+}
+
+static inline bool
+snl_attr_get_int8(struct snl_state *ss, struct nlattr *nla, const void *arg,
+    void *target)
+{
+	return (snl_attr_get_uint8(ss, nla, arg, target));
+}
+
+static inline bool
+snl_attr_get_int16(struct snl_state *ss, struct nlattr *nla, const void *arg,
+    void *target)
+{
+	return (snl_attr_get_uint16(ss, nla, arg, target));
+}
+
+static inline bool
+snl_attr_get_int32(struct snl_state *ss, struct nlattr *nla, const void *arg,
+    void *target)
+{
+	return (snl_attr_get_uint32(ss, nla, arg, target));
+}
+
+static inline bool
+snl_attr_get_int64(struct snl_state *ss, struct nlattr *nla, const void *arg,
+    void *target)
+{
+	return (snl_attr_get_uint64(ss, nla, arg, target));
 }
 
 static inline bool
@@ -550,13 +581,20 @@ snl_field_get_uint32(struct snl_state *ss __unused, void *src, void *target)
 	*((uint32_t *)target) = *((uint32_t *)src);
 }
 
+static inline void
+snl_field_get_ptr(struct snl_state *ss __unused, void *src, void *target)
+{
+	*((void **)target) = src;
+}
+
 struct snl_errmsg_data {
-	uint32_t	nlmsg_seq;
+	struct nlmsghdr	*orig_hdr;
 	int		error;
-	char		*error_str;
 	uint32_t	error_offs;
+	char		*error_str;
 	struct nlattr	*cookie;
 };
+
 #define	_IN(_field)	offsetof(struct nlmsgerr, _field)
 #define	_OUT(_field)	offsetof(struct snl_errmsg_data, _field)
 static const struct snl_attr_parser nla_p_errmsg[] = {
@@ -567,19 +605,76 @@ static const struct snl_attr_parser nla_p_errmsg[] = {
 
 static const struct snl_field_parser nlf_p_errmsg[] = {
 	{ .off_in = _IN(error), .off_out = _OUT(error), .cb = snl_field_get_uint32 },
-	{ .off_in = _IN(msg.nlmsg_seq), .off_out = _OUT(nlmsg_seq), .cb = snl_field_get_uint32 },
+	{ .off_in = _IN(msg), .off_out = _OUT(orig_hdr), .cb = snl_field_get_ptr },
 };
 #undef _IN
 #undef _OUT
 SNL_DECLARE_PARSER(snl_errmsg_parser, struct nlmsgerr, nlf_p_errmsg, nla_p_errmsg);
 
+#define	_IN(_field)	offsetof(struct nlmsgerr, _field)
+#define	_OUT(_field)	offsetof(struct snl_errmsg_data, _field)
+static const struct snl_attr_parser nla_p_donemsg[] = {};
+
+static const struct snl_field_parser nlf_p_donemsg[] = {
+	{ .off_in = _IN(error), .off_out = _OUT(error), .cb = snl_field_get_uint32 },
+};
+#undef _IN
+#undef _OUT
+SNL_DECLARE_PARSER(snl_donemsg_parser, struct nlmsgerr, nlf_p_donemsg, nla_p_donemsg);
+
 static inline bool
-snl_check_return(struct snl_state *ss, struct nlmsghdr *hdr, struct snl_errmsg_data *e)
+snl_parse_errmsg(struct snl_state *ss, struct nlmsghdr *hdr, struct snl_errmsg_data *e)
 {
-	if (hdr != NULL && hdr->nlmsg_type == NLMSG_ERROR)
+	if ((hdr->nlmsg_flags & NLM_F_CAPPED) != 0)
 		return (snl_parse_nlmsg(ss, hdr, &snl_errmsg_parser, e));
+
+	const struct snl_hdr_parser *ps = &snl_errmsg_parser;
+	struct nlmsgerr *errmsg = (struct nlmsgerr *)(hdr + 1);
+	int hdrlen = sizeof(int) + NLMSG_ALIGN(errmsg->msg.nlmsg_len);
+	struct nlattr *attr_head = (struct nlattr *)(void *)((char *)errmsg + hdrlen);
+	int attr_len = hdr->nlmsg_len - sizeof(struct nlmsghdr) - hdrlen;
+
+	snl_parse_fields(ss, (struct nlmsghdr *)errmsg, hdrlen, ps->fp, ps->fp_size, e);
+	return (snl_parse_attrs_raw(ss, attr_head, attr_len, ps->np, ps->np_size, e));
+}
+
+static inline bool
+snl_read_reply_code(struct snl_state *ss, uint32_t nlmsg_seq, struct snl_errmsg_data *e)
+{
+	struct nlmsghdr *hdr = snl_read_reply(ss, nlmsg_seq);
+
+	if (hdr == NULL) {
+		e->error = EINVAL;
+	} else if (hdr->nlmsg_type == NLMSG_ERROR) {
+		if (!snl_parse_errmsg(ss, hdr, e))
+			e->error = EINVAL;
+		return (e->error == 0);
+	}
+
 	return (false);
 }
+
+/*
+ * Assumes e is zeroed
+ */
+static inline struct nlmsghdr *
+snl_read_reply_multi(struct snl_state *ss, uint32_t nlmsg_seq, struct snl_errmsg_data *e)
+{
+	struct nlmsghdr *hdr = snl_read_reply(ss, nlmsg_seq);
+
+	if (hdr == NULL) {
+		e->error = EINVAL;
+	} else if (hdr->nlmsg_type == NLMSG_ERROR) {
+		if (!snl_parse_errmsg(ss, hdr, e))
+			e->error = EINVAL;
+	} if (hdr->nlmsg_type == NLMSG_DONE) {
+		snl_parse_nlmsg(ss, hdr, &snl_donemsg_parser, e);
+	} else
+		return (hdr);
+
+	return (NULL);
+}
+
 
 /* writer logic */
 struct snl_writer {
@@ -848,5 +943,9 @@ snl_send_msgs(struct snl_writer *nw)
 
 	return (snl_send(nw->ss, nw->base, offset));
 }
+
+static const struct snl_hdr_parser *snl_all_core_parsers[] = {
+	&snl_errmsg_parser, &snl_donemsg_parser,
+};
 
 #endif
