@@ -448,14 +448,13 @@ rack_cong_signal(struct tcpcb *tp,
 		 uint32_t type, uint32_t ack, int );
 static void rack_counter_destroy(void);
 static int
-rack_ctloutput(struct inpcb *inp, struct sockopt *sopt);
+rack_ctloutput(struct tcpcb *tp, struct sockopt *sopt);
 static int32_t rack_ctor(void *mem, int32_t size, void *arg, int32_t how);
 static void
 rack_set_pace_segments(struct tcpcb *tp, struct tcp_rack *rack, uint32_t line, uint64_t *fill_override);
 static void
-rack_do_segment(struct mbuf *m, struct tcphdr *th,
-    struct socket *so, struct tcpcb *tp, int32_t drop_hdrlen, int32_t tlen,
-    uint8_t iptos);
+rack_do_segment(struct tcpcb *tp, struct mbuf *m, struct tcphdr *th,
+    int32_t drop_hdrlen, int32_t tlen, uint8_t iptos);
 static void rack_dtor(void *mem, int32_t size, void *arg);
 static void
 rack_log_alt_to_to_cancel(struct tcp_rack *rack,
@@ -474,7 +473,7 @@ rack_find_high_nonack(struct tcp_rack *rack,
 static struct rack_sendmap *rack_find_lowest_rsm(struct tcp_rack *rack);
 static void rack_free(struct tcp_rack *rack, struct rack_sendmap *rsm);
 static void rack_fini(struct tcpcb *tp, int32_t tcb_is_purged);
-static int rack_get_sockopt(struct inpcb *inp, struct sockopt *sopt);
+static int rack_get_sockopt(struct tcpcb *tp, struct sockopt *sopt);
 static void
 rack_do_goodput_measurement(struct tcpcb *tp, struct tcp_rack *rack,
 			    tcp_seq th_ack, int line, uint8_t quality);
@@ -510,7 +509,7 @@ rack_proc_sack_blk(struct tcpcb *tp, struct tcp_rack *rack,
     uint32_t cts, int *no_extra, int *moved_two, uint32_t segsiz);
 static void rack_post_recovery(struct tcpcb *tp, uint32_t th_seq);
 static void rack_remxt_tmr(struct tcpcb *tp);
-static int rack_set_sockopt(struct inpcb *inp, struct sockopt *sopt);
+static int rack_set_sockopt(struct tcpcb *tp, struct sockopt *sopt);
 static void rack_set_state(struct tcpcb *tp, struct tcp_rack *rack);
 static int32_t rack_stopall(struct tcpcb *tp);
 static void rack_timer_cancel(struct tcpcb *tp, struct tcp_rack *rack, uint32_t cts, int line);
@@ -745,18 +744,6 @@ rack_log_gpset(struct tcp_rack *rack, uint32_t seq_end, uint32_t ack_end_t,
 		    0, &log, false, &tv);
 	}
 }
-
-#ifdef NETFLIX_PEAKRATE
-static inline void
-rack_update_peakrate_thr(struct tcpcb *tp)
-{
-	/* Keep in mind that t_maxpeakrate is in B/s. */
-	uint64_t peak;
-	peak = uqmax((tp->t_maxseg * 2),
-		     (((uint64_t)tp->t_maxpeakrate * (uint64_t)(tp->t_srtt)) / (uint64_t)HPTS_USEC_IN_SEC));
-	tp->t_peakrate_thr = (uint32_t)uqmin(peak, UINT32_MAX);
-}
-#endif
 
 static int
 sysctl_rack_clear(SYSCTL_HANDLER_ARGS)
@@ -2346,15 +2333,6 @@ rack_get_bw(struct tcp_rack *rack)
 		return (rack_get_fixed_pacing_bw(rack));
 	}
 	bw = rack_get_gp_est(rack);
-#ifdef NETFLIX_PEAKRATE
-	if ((rack->rc_tp->t_maxpeakrate) &&
-	    (bw > rack->rc_tp->t_maxpeakrate)) {
-		/* The user has set a peak rate to pace at
-		 * don't allow us to pace faster than that.
-		 */
-		return (rack->rc_tp->t_maxpeakrate);
-	}
-#endif
 	return (bw);
 }
 
@@ -3187,7 +3165,7 @@ rack_log_to_prr(struct tcp_rack *rack, int frm, int orig_cwnd, int line)
 	}
 }
 
-#ifdef NETFLIX_EXP_DETECTION
+#ifdef TCP_SAD_DETECTION
 static void
 rack_log_sad(struct tcp_rack *rack, int event)
 {
@@ -3215,7 +3193,7 @@ rack_log_sad(struct tcp_rack *rack, int event)
 		TCP_LOG_EVENTP(rack->rc_tp, NULL,
 		    &rack->rc_inp->inp_socket->so_rcv,
 		    &rack->rc_inp->inp_socket->so_snd,
-		    TCP_SAD_DETECTION, 0,
+		    TCP_SAD_DETECT, 0,
 		    0, &log, false, &tv);
 	}
 }
@@ -3358,7 +3336,7 @@ rack_alloc_limit(struct tcp_rack *rack, uint8_t limit_type)
 				counter_u64_add(rack_alloc_limited_conns, 1);
 			}
 			return (NULL);
-#ifdef NETFLIX_EXP_DETECTION
+#ifdef TCP_SAD_DETECTION
 		} else if ((tcp_sad_limit != 0) &&
 			   (rack->do_detection == 1) &&
 			   (rack->r_ctl.rc_num_split_allocs >= tcp_sad_limit)) {
@@ -5274,18 +5252,6 @@ rack_ack_received(struct tcpcb *tp, struct tcp_rack *rack, uint32_t th_ack, uint
 	    rack_enough_for_measurement(tp, rack, th_ack, &quality)) {
 		/* Measure the Goodput */
 		rack_do_goodput_measurement(tp, rack, th_ack, __LINE__, quality);
-#ifdef NETFLIX_PEAKRATE
-		if ((type == CC_ACK) &&
-		    (tp->t_maxpeakrate)) {
-			/*
-			 * We update t_peakrate_thr. This gives us roughly
-			 * one update per round trip time. Note
-			 * it will only be used if pace_always is off i.e
-			 * we don't do this for paced flows.
-			 */
-			rack_update_peakrate_thr(tp);
-		}
-#endif
 	}
 	/* Which way our we limited, if not cwnd limited no advance in CA */
 	if (tp->snd_cwnd <= tp->snd_wnd)
@@ -5366,14 +5332,6 @@ rack_ack_received(struct tcpcb *tp, struct tcp_rack *rack, uint32_t th_ack, uint
 	if (rack->r_ctl.rc_rack_largest_cwnd < rack->r_ctl.cwnd_to_use) {
 		rack->r_ctl.rc_rack_largest_cwnd = rack->r_ctl.cwnd_to_use;
 	}
-#ifdef NETFLIX_PEAKRATE
-	/* we enforce max peak rate if it is set and we are not pacing */
-	if ((rack->rc_always_pace == 0) &&
-	    tp->t_peakrate_thr &&
-	    (tp->snd_cwnd > tp->t_peakrate_thr)) {
-		tp->snd_cwnd = tp->t_peakrate_thr;
-	}
-#endif
 }
 
 static void
@@ -5926,11 +5884,6 @@ rack_cc_after_idle(struct tcp_rack *rack, struct tcpcb *tp)
 
 	INP_WLOCK_ASSERT(tptoinpcb(tp));
 
-#ifdef NETFLIX_STATS
-	KMOD_TCPSTAT_INC(tcps_idle_restarts);
-	if (tp->t_state == TCPS_ESTABLISHED)
-		KMOD_TCPSTAT_INC(tcps_idle_estrestarts);
-#endif
 	if (CC_ALGO(tp)->after_idle != NULL)
 		CC_ALGO(tp)->after_idle(&tp->t_ccv);
 
@@ -6744,7 +6697,7 @@ rack_start_hpts_timer(struct tcp_rack *rack, struct tcpcb *tp, uint32_t cts,
 		}
 	}
 	hpts_timeout = rack_timer_start(tp, rack, cts, sup_rack);
-#ifdef NETFLIX_EXP_DETECTION
+#ifdef TCP_SAD_DETECTION
 	if (rack->sack_attack_disable &&
 	    (rack->r_ctl.ack_during_sd > 0) &&
 	    (slot < tcp_sad_pacing_interval)) {
@@ -7662,7 +7615,7 @@ rack_remxt_tmr(struct tcpcb *tp)
 	rack_log_to_prr(rack, 6, 0, __LINE__);
 	rack->r_timer_override = 1;
 	if ((((tp->t_flags & TF_SACK_PERMIT) == 0)
-#ifdef NETFLIX_EXP_DETECTION
+#ifdef TCP_SAD_DETECTION
 	    || (rack->sack_attack_disable != 0)
 #endif
 		    ) && ((tp->t_flags & TF_SENTFIN) == 0)) {
@@ -9343,7 +9296,7 @@ rack_proc_sack_blk(struct tcpcb *tp, struct tcp_rack *rack, struct sackblk *sack
 	int insret __diagused;
 	int32_t used_ref = 1;
 	int moved = 0;
-#ifdef NETFLIX_EXP_DETECTION
+#ifdef TCP_SAD_DETECTION
 	int allow_segsiz;
 	int first_time_through = 1;
 #endif
@@ -9353,7 +9306,8 @@ rack_proc_sack_blk(struct tcpcb *tp, struct tcp_rack *rack, struct sackblk *sack
 	start = sack->start;
 	end = sack->end;
 	rsm = *prsm;
-#ifdef NETFLIX_EXP_DETECTION
+
+#ifdef TCP_SAD_DETECTION
 	/*
 	 * There are a strange number of proxys and meddle boxes in the world
 	 * that seem to cut up segments on different boundaries. This gets us
@@ -9384,7 +9338,7 @@ do_rest_ofb:
 		/* TSNH */
 		goto out;
 	}
-#ifdef NETFLIX_EXP_DETECTION
+#ifdef TCP_SAD_DETECTION
 	/* Now we must check for suspicous activity */
 	if ((first_time_through == 1) &&
 	    ((end - start) < min((rsm->r_end - rsm->r_start), allow_segsiz)) &&
@@ -10252,7 +10206,7 @@ rack_do_decay(struct tcp_rack *rack)
 		 * Current default is 800 so it decays
 		 * 80% every second.
 		 */
-#ifdef NETFLIX_EXP_DETECTION
+#ifdef TCP_SAD_DETECTION
 		uint32_t pkt_delta;
 
 		pkt_delta = rack->r_ctl.input_pkt - rack->r_ctl.saved_input_pkt;
@@ -10261,7 +10215,7 @@ rack_do_decay(struct tcp_rack *rack)
 		rack->r_ctl.saved_input_pkt = rack->r_ctl.input_pkt;
 		rack->r_ctl.rc_last_time_decay = rack->r_ctl.act_rcv_time;
 		/* Now do we escape without decay? */
-#ifdef NETFLIX_EXP_DETECTION
+#ifdef TCP_SAD_DETECTION
 		if (rack->rc_in_persist ||
 		    (rack->rc_tp->snd_max == rack->rc_tp->snd_una) ||
 		    (pkt_delta < tcp_sad_low_pps)){
@@ -10706,7 +10660,7 @@ rack_handle_might_revert(struct tcpcb *tp, struct tcp_rack *rack)
 	}
 }
 
-#ifdef NETFLIX_EXP_DETECTION
+#ifdef TCP_SAD_DETECTION
 
 static void
 rack_merge_out_sacks(struct tcp_rack *rack)
@@ -11384,7 +11338,7 @@ out_with_totals:
 		counter_u64_add(rack_move_some, 1);
 	}
 out:
-#ifdef NETFLIX_EXP_DETECTION
+#ifdef TCP_SAD_DETECTION
 	rack_do_detection(tp, rack, BYTES_THIS_ACK(tp, th), ctf_fixed_maxseg(rack->rc_tp));
 #endif
 	if (changed) {
@@ -14275,9 +14229,6 @@ rack_set_pace_segments(struct tcpcb *tp, struct tcp_rack *rack, uint32_t line, u
 		}
 	} else if (rack->rc_always_pace) {
 		if (rack->r_ctl.gp_bw ||
-#ifdef NETFLIX_PEAKRATE
-		    rack->rc_tp->t_maxpeakrate ||
-#endif
 		    rack->r_ctl.init_rate) {
 			/* We have a rate of some sort set */
 			uint32_t  orig;
@@ -15034,7 +14985,7 @@ rack_init(struct tcpcb *tp, void **ptr)
 		rack->rack_hdw_pace_ena = 1;
 	if (rack_hw_rate_caps)
 		rack->r_rack_hw_rate_caps = 1;
-#ifdef NETFLIX_EXP_DETECTION
+#ifdef TCP_SAD_DETECTION
 	rack->do_detection = 1;
 #else
 	rack->do_detection = 0;
@@ -15604,7 +15555,7 @@ rack_log_input_packet(struct tcpcb *tp, struct tcp_rack *rack, struct tcp_ackent
 		uint32_t orig_snd_una;
 		uint8_t xx = 0;
 
-#ifdef NETFLIX_HTTP_LOGGING
+#ifdef TCP_REQUEST_TRK
 		struct http_sendfile_track *http_req;
 
 		if (SEQ_GT(ae->ack, tp->snd_una)) {
@@ -15651,7 +15602,7 @@ rack_log_input_packet(struct tcpcb *tp, struct tcp_rack *rack, struct tcp_ackent
 		log.u_bbr.timeStamp = tcp_get_usecs(&ltv);
 		/* Log the rcv time */
 		log.u_bbr.delRate = ae->timestamp;
-#ifdef NETFLIX_HTTP_LOGGING
+#ifdef TCP_REQUEST_TRK
 		log.u_bbr.applimited = tp->t_http_closed;
 		log.u_bbr.applimited <<= 8;
 		log.u_bbr.applimited |= tp->t_http_open;
@@ -16163,7 +16114,7 @@ rack_do_compressed_ack_processing(struct tcpcb *tp, struct socket *so, struct mb
 		}
 		if (acked > sbavail(&so->so_snd))
 			acked_amount = sbavail(&so->so_snd);
-#ifdef NETFLIX_EXP_DETECTION
+#ifdef TCP_SAD_DETECTION
 		/*
 		 * We only care on a cum-ack move if we are in a sack-disabled
 		 * state. We have already added in to the ack_count, and we never
@@ -16482,13 +16433,17 @@ rack_do_compressed_ack_processing(struct tcpcb *tp, struct socket *so, struct mb
 	return (0);
 }
 
+#define	TCP_LRO_TS_OPTION \
+    ntohl((TCPOPT_NOP << 24) | (TCPOPT_NOP << 16) | \
+	  (TCPOPT_TIMESTAMP << 8) | TCPOLEN_TIMESTAMP)
 
 static int
-rack_do_segment_nounlock(struct mbuf *m, struct tcphdr *th, struct socket *so,
-    struct tcpcb *tp, int32_t drop_hdrlen, int32_t tlen, uint8_t iptos,
-    int32_t nxt_pkt, struct timeval *tv)
+rack_do_segment_nounlock(struct tcpcb *tp, struct mbuf *m, struct tcphdr *th,
+    int32_t drop_hdrlen, int32_t tlen, uint8_t iptos, int32_t nxt_pkt,
+    struct timeval *tv)
 {
 	struct inpcb *inp = tptoinpcb(tp);
+	struct socket *so = tptosocket(tp);
 #ifdef TCP_ACCOUNTING
 	uint64_t ts_val;
 #endif
@@ -16506,6 +16461,8 @@ rack_do_segment_nounlock(struct mbuf *m, struct tcphdr *th, struct socket *so,
 	struct tcp_rack *rack;
 	struct rack_sendmap *rsm;
 	int32_t prev_state = 0;
+	int no_output = 0;
+	int slot_remaining = 0;
 #ifdef TCP_ACCOUNTING
 	int ack_val_set = 0xf;
 #endif
@@ -16527,6 +16484,43 @@ rack_do_segment_nounlock(struct mbuf *m, struct tcphdr *th, struct socket *so,
 		 * some initialization. Call that now.
 		 */
 		rack_deferred_init(tp, rack);
+	}
+	/*
+	 * Check to see if we need to skip any output plans. This
+	 * can happen in the non-LRO path where we are pacing and
+	 * must process the ack coming in but need to defer sending
+	 * anything becase a pacing timer is running.
+	 */
+	us_cts = tcp_tv_to_usectick(tv);
+	if ((rack->rc_always_pace == 1) &&
+	    (rack->r_ctl.rc_hpts_flags & PACE_PKT_OUTPUT) &&
+	    (TSTMP_LT(us_cts, rack->r_ctl.rc_last_output_to))) {
+		/*
+		 * Ok conditions are right for queuing the packets
+		 * but we do have to check the flags in the inp, it
+		 * could be, if a sack is present, we want to be awoken and
+		 * so should process the packets.
+		 */
+		slot_remaining = rack->r_ctl.rc_last_output_to - us_cts;
+		if (rack->rc_inp->inp_flags2 & INP_DONT_SACK_QUEUE) {
+			no_output = 1;
+		} else {
+			/*
+			 * If there is no options, or just a
+			 * timestamp option, we will want to queue
+			 * the packets. This is the same that LRO does
+			 * and will need to change with accurate ECN.
+			 */
+			uint32_t *ts_ptr;
+			int optlen;
+
+			optlen = (th->th_off << 2) - sizeof(struct tcphdr);
+			ts_ptr = (uint32_t *)(th + 1);
+			if ((optlen == 0) ||
+			    ((optlen == TCPOLEN_TSTAMP_APPA) &&
+			     (*ts_ptr == TCP_LRO_TS_OPTION)))
+				no_output = 1;
+		}
 	}
 	if (m->m_flags & M_ACKCMP) {
 		/*
@@ -16641,7 +16635,7 @@ rack_do_segment_nounlock(struct mbuf *m, struct tcphdr *th, struct socket *so,
 	if (tcp_bblogging_on(rack->rc_tp)) {
 		union tcp_log_stackspecific log;
 		struct timeval ltv;
-#ifdef NETFLIX_HTTP_LOGGING
+#ifdef TCP_REQUEST_TRK
 		struct http_sendfile_track *http_req;
 
 		if (SEQ_GT(th->th_ack, tp->snd_una)) {
@@ -16687,7 +16681,7 @@ rack_do_segment_nounlock(struct mbuf *m, struct tcphdr *th, struct socket *so,
 		log.u_bbr.timeStamp = tcp_get_usecs(&ltv);
 		/* Log the rcv time */
 		log.u_bbr.delRate = m->m_pkthdr.rcv_tstmp;
-#ifdef NETFLIX_HTTP_LOGGING
+#ifdef TCP_REQUEST_TRK
 		log.u_bbr.applimited = tp->t_http_closed;
 		log.u_bbr.applimited <<= 8;
 		log.u_bbr.applimited |= tp->t_http_open;
@@ -16871,7 +16865,7 @@ rack_do_segment_nounlock(struct mbuf *m, struct tcphdr *th, struct socket *so,
 		if ((rack_sack_not_required == 0) &&
 		    ((tp->t_flags & TF_SACK_PERMIT) == 0)) {
 			tcp_switch_back_to_default(tp);
-			(*tp->t_fb->tfb_tcp_do_segment) (m, th, so, tp, drop_hdrlen,
+			(*tp->t_fb->tfb_tcp_do_segment)(tp, m, th, drop_hdrlen,
 			    tlen, iptos);
 #ifdef TCP_ACCOUNTING
 			sched_unpin();
@@ -16962,7 +16956,7 @@ rack_do_segment_nounlock(struct mbuf *m, struct tcphdr *th, struct socket *so,
 			}
 		}
 #endif
-		if (nxt_pkt == 0) {
+		if ((nxt_pkt == 0) && (no_output == 0)) {
 			if ((rack->r_wanted_output != 0) || (rack->r_fast_output != 0)) {
 do_output_now:
 				if (tcp_output(tp) < 0) {
@@ -16974,6 +16968,16 @@ do_output_now:
 				did_out = 1;
 			}
 			rack_start_hpts_timer(rack, tp, cts, 0, 0, 0);
+			rack_free_trim(rack);
+		} else if ((no_output == 1) &&
+			   (nxt_pkt == 0)  &&
+			   (tcp_in_hpts(rack->rc_inp) == 0)) {
+			/*
+			 * We are not in hpts and we had a pacing timer up. Use
+			 * the remaining time (slot_remaining) to restart the timer.
+			 */
+			KASSERT ((slot_remaining != 0), ("slot remaining is zero for rack:%p tp:%p", rack, tp));
+			rack_start_hpts_timer(rack, tp, cts, slot_remaining, 0, 0);
 			rack_free_trim(rack);
 		}
 		/* Update any rounds needed */
@@ -17054,15 +17058,15 @@ do_output_now:
 	return (retval);
 }
 
-void
-rack_do_segment(struct mbuf *m, struct tcphdr *th, struct socket *so,
-    struct tcpcb *tp, int32_t drop_hdrlen, int32_t tlen, uint8_t iptos)
+static void
+rack_do_segment(struct tcpcb *tp, struct mbuf *m, struct tcphdr *th,
+    int32_t drop_hdrlen, int32_t tlen, uint8_t iptos)
 {
 	struct timeval tv;
 
 	/* First lets see if we have old packets */
 	if (tp->t_in_pkt) {
-		if (ctf_do_queued_segments(so, tp, 1)) {
+		if (ctf_do_queued_segments(tp, 1)) {
 			m_freem(m);
 			return;
 		}
@@ -17073,8 +17077,8 @@ rack_do_segment(struct mbuf *m, struct tcphdr *th, struct socket *so,
 		/* Should not be should we kassert instead? */
 		tcp_get_usecs(&tv);
 	}
-	if (rack_do_segment_nounlock(m, th, so, tp,
-				     drop_hdrlen, tlen, iptos, 0, &tv) == 0) {
+	if (rack_do_segment_nounlock(tp, m, th, drop_hdrlen, tlen, iptos, 0,
+	    &tv) == 0) {
 		INP_WUNLOCK(tptoinpcb(tp));
 	}
 }
@@ -17474,9 +17478,6 @@ rack_get_pacing_delay(struct tcp_rack *rack, struct tcpcb *tp, uint32_t len, str
 		if (rack->use_fixed_rate) {
 			rate_wanted = bw_est = rack_get_fixed_pacing_bw(rack);
 		} else if ((rack->r_ctl.init_rate == 0) &&
-#ifdef NETFLIX_PEAKRATE
-			   (rack->rc_tp->t_maxpeakrate == 0) &&
-#endif
 			   (rack->r_ctl.gp_bw == 0)) {
 			/* no way to yet do an estimate */
 			bw_est = rate_wanted = 0;
@@ -17717,9 +17718,6 @@ rack_get_pacing_delay(struct tcp_rack *rack, struct tcpcb *tp, uint32_t len, str
 done_w_hdwr:
 		if (rack_limit_time_with_srtt &&
 		    (rack->use_fixed_rate == 0) &&
-#ifdef NETFLIX_PEAKRATE
-		    (rack->rc_tp->t_maxpeakrate == 0) &&
-#endif
 		    (rack->rack_hdrw_pacing == 0)) {
 			/*
 			 * Sanity check, we do not allow the pacing delay
@@ -23043,9 +23041,6 @@ rack_process_option(struct tcpcb *tp, struct tcp_rack *rack, int sopt_name,
 				snt = 0;
 			if ((snt < win) &&
 			    (tp->t_srtt |
-#ifdef NETFLIX_PEAKRATE
-			     tp->t_maxpeakrate |
-#endif
 			     rack->r_ctl.init_rate)) {
 				/*
 				 * We are not past the initial window
@@ -23324,9 +23319,7 @@ rack_process_option(struct tcpcb *tp, struct tcp_rack *rack, int sopt_name,
 	default:
 		break;
 	}
-#ifdef NETFLIX_STATS
 	tcp_log_socket_option(tp, sopt_name, optval, error);
-#endif
 	return (error);
 }
 
@@ -23423,21 +23416,21 @@ static struct tcp_function_block __tcp_rack = {
  * option.
  */
 static int
-rack_set_sockopt(struct inpcb *inp, struct sockopt *sopt)
+rack_set_sockopt(struct tcpcb *tp, struct sockopt *sopt)
 {
+	struct inpcb *inp = tptoinpcb(tp);
 #ifdef INET6
 	struct ip6_hdr *ip6;
+	int32_t mask, tclass;
 #endif
 #ifdef INET
 	struct ip *ip;
 #endif
-	struct tcpcb *tp;
 	struct tcp_rack *rack;
 	struct tcp_hybrid_req hybrid;
 	uint64_t loptval;
-	int32_t error = 0, mask, optval, tclass;
+	int32_t error = 0, optval;
 
-	tp = intotcpcb(inp);
 	rack = (struct tcp_rack *)tp->t_fb_ptr;
 	if (rack == NULL) {
 		INP_WUNLOCK(inp);
@@ -23573,7 +23566,7 @@ rack_set_sockopt(struct inpcb *inp, struct sockopt *sopt)
 			break;
 		default:
 			/* Filter off all unknown options to the base stack */
-			return (tcp_default_ctloutput(inp, sopt));
+			return (tcp_default_ctloutput(tp, sopt));
 			break;
 		}
 
@@ -23668,9 +23661,9 @@ rack_fill_info(struct tcpcb *tp, struct tcp_info *ti)
 	ti->tcpi_snd_rexmitpack = tp->t_sndrexmitpack;
 	ti->tcpi_rcv_ooopack = tp->t_rcvoopack;
 	ti->tcpi_snd_zerowin = tp->t_sndzerowin;
-#ifdef NETFLIX_STATS
 	ti->tcpi_total_tlp = tp->t_sndtlppack;
 	ti->tcpi_total_tlp_bytes = tp->t_sndtlpbyte;
+#ifdef NETFLIX_STATS
 	memcpy(&ti->tcpi_rxsyninfo, &tp->t_rxsyninfo, sizeof(struct tcpsyninfo));
 #endif
 #ifdef TCP_OFFLOAD
@@ -23682,9 +23675,9 @@ rack_fill_info(struct tcpcb *tp, struct tcp_info *ti)
 }
 
 static int
-rack_get_sockopt(struct inpcb *inp, struct sockopt *sopt)
+rack_get_sockopt(struct tcpcb *tp, struct sockopt *sopt)
 {
-	struct tcpcb *tp;
+	struct inpcb *inp = tptoinpcb(tp);
 	struct tcp_rack *rack;
 	int32_t error, optval;
 	uint64_t val, loptval;
@@ -23696,7 +23689,6 @@ rack_get_sockopt(struct inpcb *inp, struct sockopt *sopt)
 	 * impact to this routine.
 	 */
 	error = 0;
-	tp = intotcpcb(inp);
 	rack = (struct tcp_rack *)tp->t_fb_ptr;
 	if (rack == NULL) {
 		INP_WUNLOCK(inp);
@@ -23962,7 +23954,7 @@ rack_get_sockopt(struct inpcb *inp, struct sockopt *sopt)
 		optval = rack->r_ctl.timer_slop;
 		break;
 	default:
-		return (tcp_default_ctloutput(inp, sopt));
+		return (tcp_default_ctloutput(tp, sopt));
 		break;
 	}
 	INP_WUNLOCK(inp);
@@ -23976,12 +23968,12 @@ rack_get_sockopt(struct inpcb *inp, struct sockopt *sopt)
 }
 
 static int
-rack_ctloutput(struct inpcb *inp, struct sockopt *sopt)
+rack_ctloutput(struct tcpcb *tp, struct sockopt *sopt)
 {
 	if (sopt->sopt_dir == SOPT_SET) {
-		return (rack_set_sockopt(inp, sopt));
+		return (rack_set_sockopt(tp, sopt));
 	} else if (sopt->sopt_dir == SOPT_GET) {
-		return (rack_get_sockopt(inp, sopt));
+		return (rack_get_sockopt(tp, sopt));
 	} else {
 		panic("%s: sopt_dir $%d", __func__, sopt->sopt_dir);
 	}
