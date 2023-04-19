@@ -8113,6 +8113,9 @@ rack_stop_all_timers(struct tcpcb *tp, struct tcp_rack *rack)
 		/* We enter in persists, set the flag appropriately */
 		rack->rc_in_persist = 1;
 	}
+	if (tcp_in_hpts(rack->rc_inp)) {
+		tcp_hpts_remove(rack->rc_inp);
+	}
 }
 
 static void
@@ -16424,6 +16427,8 @@ rack_do_compressed_ack_processing(struct tcpcb *tp, struct socket *so, struct mb
 		}
 		did_out = 1;
 	}
+	if (rack->rc_inp->inp_hpts_calls)
+		rack->rc_inp->inp_hpts_calls = 0;
 	rack_free_trim(rack);
 #ifdef TCP_ACCOUNTING
 	sched_unpin();
@@ -16521,6 +16526,17 @@ rack_do_segment_nounlock(struct tcpcb *tp, struct mbuf *m, struct tcphdr *th,
 			    ((optlen == TCPOLEN_TSTAMP_APPA) &&
 			     (*ts_ptr == TCP_LRO_TS_OPTION)))
 				no_output = 1;
+		}
+		if ((no_output == 1) && (slot_remaining < tcp_min_hptsi_time)) {
+			/*
+			 * It is unrealistic to think we can pace in less than
+			 * the minimum granularity of the pacer (def:250usec). So
+			 * if we have less than that time remaining we should go
+			 * ahead and allow output to be "early". We will attempt to
+			 * make up for it in any pacing time we try to apply on
+			 * the outbound packet.
+			 */
+			no_output = 0;
 		}
 	}
 	if (m->m_flags & M_ACKCMP) {
@@ -16981,6 +16997,9 @@ do_output_now:
 			rack_start_hpts_timer(rack, tp, cts, slot_remaining, 0, 0);
 			rack_free_trim(rack);
 		}
+		/* Clear the flag, it may have been cleared by output but we may not have  */
+		if ((nxt_pkt == 0) && (inp->inp_hpts_calls))
+			inp->inp_hpts_calls = 0;
 		/* Update any rounds needed */
 		if (rack_verbose_logging &&  tcp_bblogging_on(rack->rc_tp))
 			rack_log_hystart_event(rack, high_seq, 8);
@@ -17066,7 +17085,7 @@ rack_do_segment(struct tcpcb *tp, struct mbuf *m, struct tcphdr *th,
 	struct timeval tv;
 
 	/* First lets see if we have old packets */
-	if (tp->t_in_pkt) {
+	if (!STAILQ_EMPTY(&tp->t_inqueue)) {
 		if (ctf_do_queued_segments(tp, 1)) {
 			m_freem(m);
 			return;
@@ -19634,6 +19653,7 @@ rack_output(struct tcpcb *tp)
 	ts_val = get_cyclecount();
 #endif
 	hpts_calling = inp->inp_hpts_calls;
+	rack->rc_inp->inp_hpts_calls = 0;
 #ifdef TCP_OFFLOAD
 	if (tp->t_flags & TF_TOE) {
 #ifdef TCP_ACCOUNTING
@@ -19756,7 +19776,6 @@ rack_output(struct tcpcb *tp)
 		counter_u64_add(rack_out_size[TCP_MSS_ACCT_INPACE], 1);
 		return (0);
 	}
-	rack->rc_inp->inp_hpts_calls = 0;
 	/* Finish out both pacing early and late accounting */
 	if ((rack->r_ctl.rc_hpts_flags & PACE_PKT_OUTPUT) &&
 	    TSTMP_GT(rack->r_ctl.rc_last_output_to, cts)) {
@@ -19873,7 +19892,7 @@ again:
 	while (rack->rc_free_cnt < rack_free_cache) {
 		rsm = rack_alloc(rack);
 		if (rsm == NULL) {
-			if (inp->inp_hpts_calls)
+			if (hpts_calling)
 				/* Retry in a ms */
 				slot = (1 * HPTS_USEC_IN_MSEC);
 			so = inp->inp_socket;
@@ -19884,8 +19903,6 @@ again:
 		rack->rc_free_cnt++;
 		rsm = NULL;
 	}
-	if (inp->inp_hpts_calls)
-		inp->inp_hpts_calls = 0;
 	sack_rxmit = 0;
 	len = 0;
 	rsm = NULL;
