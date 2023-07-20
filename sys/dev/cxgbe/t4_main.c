@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 Chelsio Communications, Inc.
  * All rights reserved.
@@ -5096,6 +5096,7 @@ partition_resources(struct adapter *sc)
 retry:
 	rc = apply_cfg_and_initialize(sc, cfg_file, &caps_allowed);
 	if (rc != 0 && fallback) {
+		dump_devlog(sc);
 		device_printf(sc->dev,
 		    "failed (%d) to configure card with \"%s\" profile, "
 		    "will fall back to a basic configuration and retry.\n",
@@ -12920,10 +12921,9 @@ t4_dump_devlog(struct adapter *sc)
 	} while (i != first && !db_pager_quit);
 }
 
-static struct db_command_table db_t4_table = LIST_HEAD_INITIALIZER(db_t4_table);
-_DB_SET(_show, t4, NULL, db_show_table, 0, &db_t4_table);
+static DB_DEFINE_TABLE(show, t4, show_t4);
 
-DB_FUNC(devlog, db_show_devlog, db_t4_table, CS_OWN, NULL)
+DB_TABLE_COMMAND_FLAGS(show_t4, devlog, db_show_devlog, CS_OWN)
 {
 	device_t dev;
 	int t;
@@ -12949,7 +12949,7 @@ DB_FUNC(devlog, db_show_devlog, db_t4_table, CS_OWN, NULL)
 	t4_dump_devlog(device_get_softc(dev));
 }
 
-DB_FUNC(tcb, db_show_t4tcb, db_t4_table, CS_OWN, NULL)
+DB_TABLE_COMMAND_FLAGS(show_t4, tcb, db_show_t4tcb, CS_OWN)
 {
 	device_t dev;
 	int radix, tid, t;

@@ -58,14 +58,24 @@ BRANCH="CURRENT"
 if [ -n "${BRANCH_OVERRIDE}" ]; then
 	BRANCH=${BRANCH_OVERRIDE}
 fi
-RELEASE="${REVISION}-${BRANCH}"
-VERSION="${TYPE} ${RELEASE}"
 
 if [ -z "${SYSDIR}" ]; then
-    SYSDIR=$(dirname $0)/..
+	SYSDIR=$(dirname $0)/..
 fi
 
-RELDATE=$(awk '/^\#define[[:space:]]*__FreeBSD_version/ {print $3}' ${PARAMFILE:-${SYSDIR}/sys/param.h})
+# allow random overrides
+while :
+do
+	case "$1" in
+	*=*) eval "$1"; shift;;
+	*) break;;
+	esac
+done
+
+RELEASE="${RELEASE:-${REVISION}-${BRANCH}}"
+VERSION="${VERSION:-${TYPE} ${RELEASE}}"
+
+RELDATE=$(awk '/^#define[[:space:]]*__FreeBSD_version/ {print $3}' ${PARAMFILE:-${SYSDIR}/sys/param.h})
 
 if [ -r "${SYSDIR}/../COPYRIGHT" ]; then
 	year=$(sed -Ee '/^Copyright .* The FreeBSD Project/!d;s/^.*1992-([0-9]*) .*$/\1/g' ${SYSDIR}/../COPYRIGHT)

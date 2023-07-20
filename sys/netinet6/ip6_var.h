@@ -81,7 +81,7 @@ struct	ip6q {
 	u_int32_t	ip6q_ident;
 	u_int8_t	ip6q_nxt;
 	u_int8_t	ip6q_ecn;
-	u_int8_t	ip6q_ttl;
+	u_int16_t	ip6q_ttl;
 	struct in6_addr ip6q_src, ip6q_dst;
 	TAILQ_ENTRY(ip6q) ip6q_tq;
 	int		ip6q_unfrglen;	/* len of unfragmentable part */
@@ -325,6 +325,10 @@ VNET_DECLARE(struct pfil_head *, inet6_pfil_head);
 #define	V_inet6_pfil_head	VNET(inet6_pfil_head)
 #define	PFIL_INET6_NAME		"inet6"
 
+VNET_DECLARE(struct pfil_head *, inet6_local_pfil_head);
+#define	V_inet6_local_pfil_head	VNET(inet6_local_pfil_head)
+#define	PFIL_INET6_LOCAL_NAME	"inet6-local"
+
 #ifdef IPSTEALTH
 VNET_DECLARE(int, ip6stealth);
 #define	V_ip6stealth			VNET(ip6stealth)
@@ -342,6 +346,7 @@ extern struct	pr_usrreqs rip6_usrreqs;
 struct sockopt;
 
 struct inpcb;
+struct ucred;
 
 int	icmp6_ctloutput(struct socket *, struct sockopt *sopt);
 

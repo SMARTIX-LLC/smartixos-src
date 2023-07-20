@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2017 Rick Macklem
  *
@@ -43,7 +43,7 @@ __FBSDID("$FreeBSD$");
 #include <fs/nfs/nfskpiport.h>
 #include <fs/nfs/nfs.h>
 
-static void usage(void);
+static void usage(void) __dead2;
 
 static struct option longopts[] = {
 	{ "force",	no_argument,	NULL,	'f'	},

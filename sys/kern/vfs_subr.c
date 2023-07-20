@@ -145,7 +145,7 @@ SYSCTL_COUNTER_U64(_vfs, OID_AUTO, vnodes_created, CTLFLAG_RD, &vnodes_created,
  * Conversion tables for conversion from vnode types to inode formats
  * and back.
  */
-enum vtype iftovt_tab[16] = {
+__enum_uint8(vtype) iftovt_tab[16] = {
 	VNON, VFIFO, VCHR, VNON, VDIR, VNON, VBLK, VNON,
 	VREG, VNON, VLNK, VNON, VSOCK, VNON, VNON, VNON
 };
@@ -5261,7 +5261,7 @@ out_error:
  * Returns 0 on success, or an errno on failure.
  */
 int
-vaccess(enum vtype type, mode_t file_mode, uid_t file_uid, gid_t file_gid,
+vaccess(__enum_uint8(vtype) type, mode_t file_mode, uid_t file_uid, gid_t file_gid,
     accmode_t accmode, struct ucred *cred)
 {
 	accmode_t dac_granted;
@@ -6382,77 +6382,6 @@ filt_vfsvnode(struct knote *kn, long hint)
 	return (res);
 }
 
-/*
- * Returns whether the directory is empty or not.
- * If it is empty, the return value is 0; otherwise
- * the return value is an error value (which may
- * be ENOTEMPTY).
- */
-int
-vfs_emptydir(struct vnode *vp)
-{
-	struct uio uio;
-	struct iovec iov;
-	struct dirent *dirent, *dp, *endp;
-	int error, eof;
-
-	error = 0;
-	eof = 0;
-
-	ASSERT_VOP_LOCKED(vp, "vfs_emptydir");
-	VNPASS(vp->v_type == VDIR, vp);
-
-	dirent = malloc(sizeof(struct dirent), M_TEMP, M_WAITOK);
-	iov.iov_base = dirent;
-	iov.iov_len = sizeof(struct dirent);
-
-	uio.uio_iov = &iov;
-	uio.uio_iovcnt = 1;
-	uio.uio_offset = 0;
-	uio.uio_resid = sizeof(struct dirent);
-	uio.uio_segflg = UIO_SYSSPACE;
-	uio.uio_rw = UIO_READ;
-	uio.uio_td = curthread;
-
-	while (eof == 0 && error == 0) {
-		error = VOP_READDIR(vp, &uio, curthread->td_ucred, &eof,
-		    NULL, NULL);
-		if (error != 0)
-			break;
-		endp = (void *)((uint8_t *)dirent +
-		    sizeof(struct dirent) - uio.uio_resid);
-		for (dp = dirent; dp < endp;
-		     dp = (void *)((uint8_t *)dp + GENERIC_DIRSIZ(dp))) {
-			if (dp->d_type == DT_WHT)
-				continue;
-			if (dp->d_namlen == 0)
-				continue;
-			if (dp->d_type != DT_DIR &&
-			    dp->d_type != DT_UNKNOWN) {
-				error = ENOTEMPTY;
-				break;
-			}
-			if (dp->d_namlen > 2) {
-				error = ENOTEMPTY;
-				break;
-			}
-			if (dp->d_namlen == 1 &&
-			    dp->d_name[0] != '.') {
-				error = ENOTEMPTY;
-				break;
-			}
-			if (dp->d_namlen == 2 &&
-			    dp->d_name[1] != '.') {
-				error = ENOTEMPTY;
-				break;
-			}
-			uio.uio_resid = sizeof(struct dirent);
-		}
-	}
-	free(dirent, M_TEMP);
-	return (error);
-}
-
 int
 vfs_read_dirent(struct vop_readdir_args *ap, struct dirent *dp, off_t off)
 {
@@ -7086,7 +7015,7 @@ vn_getsize(struct vnode *vp, off_t *size, struct ucred *cred)
 
 #ifdef INVARIANTS
 void
-vn_set_state_validate(struct vnode *vp, enum vstate state)
+vn_set_state_validate(struct vnode *vp, __enum_uint8(vstate) state)
 {
 
 	switch (vp->v_state) {

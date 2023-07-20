@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004 Poul-Henning Kamp
  * Copyright (c) 1994,1997 John S. Dyson
@@ -63,10 +63,12 @@ __FBSDID("$FreeBSD$");
 #include <sys/limits.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
+#include <sys/memdesc.h>
 #include <sys/mount.h>
 #include <sys/mutex.h>
 #include <sys/kernel.h>
 #include <sys/kthread.h>
+#include <sys/pctrie.h>
 #include <sys/proc.h>
 #include <sys/racct.h>
 #include <sys/refcount.h>
@@ -118,7 +120,7 @@ struct bufqueue {
 #define	BQ_ASSERT_LOCKED(bq)	mtx_assert(BQ_LOCKPTR((bq)), MA_OWNED)
 
 struct bufdomain {
-	struct bufqueue	bd_subq[MAXCPU + 1]; /* Per-cpu sub queues + global */
+	struct bufqueue	*bd_subq;
 	struct bufqueue bd_dirtyq;
 	struct bufqueue	*bd_cleanq;
 	struct mtx_padalign bd_run_lock;
@@ -1168,7 +1170,12 @@ kern_vfs_bio_buffer_alloc(caddr_t v, long physmem_est)
 	}
 
 	if (nswbuf == 0) {
-		nswbuf = min(nbuf / 4, 256);
+		/*
+		 * Pager buffers are allocated for short periods, so scale the
+		 * number of reserved buffers based on the number of CPUs rather
+		 * than amount of memory.
+		 */
+		nswbuf = min(nbuf / 4, 32 * mp_ncpus);
 		if (nswbuf < NSWBUF_MIN)
 			nswbuf = NSWBUF_MIN;
 	}
@@ -1196,6 +1203,7 @@ bufinit(void)
 	struct buf *bp;
 	int i;
 
+	TSENTER();
 	KASSERT(maxbcachebuf >= MAXBSIZE,
 	    ("maxbcachebuf (%d) must be >= MAXBSIZE (%d)\n", maxbcachebuf,
 	    MAXBSIZE));
@@ -1331,6 +1339,7 @@ bufinit(void)
 	buffreekvacnt = counter_u64_alloc(M_WAITOK);
 	bufdefragcnt = counter_u64_alloc(M_WAITOK);
 	bufkvaspace = counter_u64_alloc(M_WAITOK);
+	TSEXIT();
 }
 
 #ifdef INVARIANTS
@@ -1914,6 +1923,9 @@ bd_init(struct bufdomain *bd)
 {
 	int i;
 
+	/* Per-CPU clean buf queues, plus one global queue. */
+	bd->bd_subq = mallocarray(mp_maxid + 2, sizeof(struct bufqueue),
+	    M_BIOBUF, M_WAITOK | M_ZERO);
 	bd->bd_cleanq = &bd->bd_subq[mp_maxid + 1];
 	bq_init(bd->bd_cleanq, QUEUE_CLEAN, mp_maxid + 1, "bufq clean lock");
 	bq_init(&bd->bd_dirtyq, QUEUE_DIRTY, -1, "bufq dirty lock");
@@ -5142,7 +5154,9 @@ bufobj_init(struct bufobj *bo, void *private)
         rw_init(BO_LOCKPTR(bo), "bufobj interlock");
         bo->bo_private = private;
         TAILQ_INIT(&bo->bo_clean.bv_hd);
+	pctrie_init(&bo->bo_clean.bv_root);
         TAILQ_INIT(&bo->bo_dirty.bv_hd);
+	pctrie_init(&bo->bo_dirty.bv_root);
 }
 
 void
@@ -5218,6 +5232,20 @@ bdata2bio(struct buf *bp, struct bio *bip)
 		bip->bio_data = bp->b_data;
 		bip->bio_ma = NULL;
 	}
+}
+
+struct memdesc
+memdesc_bio(struct bio *bio)
+{
+	if ((bio->bio_flags & BIO_VLIST) != 0)
+		return (memdesc_vlist((struct bus_dma_segment *)bio->bio_data,
+		    bio->bio_ma_n));
+
+	if ((bio->bio_flags & BIO_UNMAPPED) != 0)
+		return (memdesc_vmpages(bio->bio_ma, bio->bio_bcount,
+		    bio->bio_ma_offset));
+
+	return (memdesc_vaddr(bio->bio_data, bio->bio_bcount));
 }
 
 static int buf_pager_relbuf;

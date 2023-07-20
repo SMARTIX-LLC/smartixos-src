@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002-2009 Luigi Rizzo, Universita` di Pisa
  *
@@ -69,6 +69,7 @@ __FBSDID("$FreeBSD$");
 #include <net/route/nhop.h>
 #include <net/pfil.h>
 #include <net/vnet.h>
+#include <net/if_pfsync.h>
 
 #include <netpfil/pf/pf_mtag.h>
 
@@ -1718,6 +1719,10 @@ do {								\
 				PULLUP_TO(hlen, ulp, struct ip);
 				break;
 
+			case IPPROTO_PFSYNC:
+				PULLUP_TO(hlen, ulp, struct pfsync_header);
+				break;
+
 			default:
 				if (V_fw_verbose)
 					printf("IPFW2: IPV6 - Unknown "
@@ -2002,7 +2007,7 @@ do {								\
 					    >> 8) | (offset != 0));
 				} else {
 					/*
-					 * Compatiblity: historically bare
+					 * Compatibility: historically bare
 					 * "frag" would match IPv6 fragments.
 					 */
 					match = (cmd->arg1 == 0x1 &&
@@ -2126,6 +2131,11 @@ do {								\
 							eh->ether_dhost:
 							eh->ether_shost;
 						keylen = ETHER_ADDR_LEN;
+						break;
+					case LOOKUP_MARK:
+						key = args->rule.pkt_mark;
+						pkey = &key;
+						keylen = sizeof(key);
 						break;
 					}
 					if (keylen == 0)
@@ -2773,6 +2783,19 @@ do {								\
 				}
 				break;
 			}
+
+			case O_MARK: {
+				uint32_t mark;
+				if (cmd->arg1 == IP_FW_TARG)
+					mark = TARG_VAL(chain, tablearg, mark);
+				else
+					mark = ((ipfw_insn_u32 *)cmd)->d[0];
+				match =
+				    (args->rule.pkt_mark &
+				    ((ipfw_insn_u32 *)cmd)->d[1]) ==
+				    (mark & ((ipfw_insn_u32 *)cmd)->d[1]);
+				break;
+			}
 				
 			/*
 			 * The second set of opcodes represents 'actions',
@@ -3276,6 +3299,18 @@ do {								\
 				done = 1;	/* exit outer loop */
 				break;
 			}
+
+			case O_SETMARK: {
+				l = 0;		/* exit inner loop */
+				args->rule.pkt_mark = (
+				    (cmd->arg1 == IP_FW_TARG) ?
+				    TARG_VAL(chain, tablearg, mark) :
+				    ((ipfw_insn_u32 *)cmd)->d[0]);
+
+				IPFW_INC_RULE_COUNTER(f, pktlen);
+				break;
+			}
+
 			case O_EXTERNAL_ACTION:
 				l = 0; /* in any case exit inner loop */
 				retval = ipfw_run_eaction(chain, args,

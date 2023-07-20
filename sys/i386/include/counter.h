@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2012 Konstantin Belousov <kib@FreeBSD.org>
  * All rights reserved.
@@ -35,6 +35,7 @@
 #ifdef INVARIANTS
 #include <sys/proc.h>
 #endif
+#include <sys/systm.h>
 #include <machine/md_var.h>
 #include <machine/specialreg.h>
 

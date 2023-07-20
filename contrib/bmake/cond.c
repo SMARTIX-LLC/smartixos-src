@@ -1,4 +1,4 @@
-/*	$NetBSD: cond.c,v 1.342 2022/09/24 16:13:48 rillig Exp $	*/
+/*	$NetBSD: cond.c,v 1.353 2023/06/23 05:21:10 rillig Exp $	*/
 
 /*
  * Copyright (c) 1988, 1989, 1990 The Regents of the University of California.
@@ -92,7 +92,7 @@
 #include "dir.h"
 
 /*	"@(#)cond.c	8.2 (Berkeley) 1/2/94"	*/
-MAKE_RCSID("$NetBSD: cond.c,v 1.342 2022/09/24 16:13:48 rillig Exp $");
+MAKE_RCSID("$NetBSD: cond.c,v 1.353 2023/06/23 05:21:10 rillig Exp $");
 
 /*
  * Conditional expressions conform to this grammar:
@@ -136,10 +136,10 @@ typedef struct CondParser {
 
 	/*
 	 * The plain '.if ${VAR}' evaluates to true if the value of the
-	 * expression has length > 0.  The other '.if' variants delegate
-	 * to evalBare instead, for example '.ifdef ${VAR}' is equivalent to
-	 * '.if defined(${VAR})', checking whether the variable named by the
-	 * expression '${VAR}' is defined.
+	 * expression has length > 0 and is not numerically zero.  The other
+	 * '.if' variants delegate to evalBare instead, for example '.ifdef
+	 * ${VAR}' is equivalent to '.if defined(${VAR})', checking whether
+	 * the variable named by the expression '${VAR}' is defined.
 	 */
 	bool plain;
 
@@ -173,7 +173,7 @@ typedef struct CondParser {
 	bool printedError;
 } CondParser;
 
-static CondResult CondParser_Or(CondParser *par, bool);
+static CondResult CondParser_Or(CondParser *, bool);
 
 unsigned int cond_depth = 0;	/* current .if nesting level */
 
@@ -235,8 +235,7 @@ ParseWord(const char **pp, bool doEval)
 			VarEvalMode emode = doEval
 			    ? VARE_UNDEFERR
 			    : VARE_PARSE_ONLY;
-			FStr nestedVal;
-			(void)Var_Parse(&p, SCOPE_CMDLINE, emode, &nestedVal);
+			FStr nestedVal = Var_Parse(&p, SCOPE_CMDLINE, emode);
 			/* TODO: handle errors */
 			Buf_AddStr(&word, nestedVal.str);
 			FStr_Done(&nestedVal);
@@ -296,10 +295,19 @@ static bool
 FuncMake(const char *targetPattern)
 {
 	StringListNode *ln;
+	bool warned = false;
 
-	for (ln = opts.create.first; ln != NULL; ln = ln->next)
-		if (Str_Match(ln->datum, targetPattern))
+	for (ln = opts.create.first; ln != NULL; ln = ln->next) {
+		StrMatchResult res = Str_Match(ln->datum, targetPattern);
+		if (res.error != NULL && !warned) {
+			warned = true;
+			Parse_Error(PARSE_WARNING,
+			    "%s in pattern argument '%s' to function 'make'",
+			    res.error, targetPattern);
+		}
+		if (res.matched)
 			return true;
+	}
 	return false;
 }
 
@@ -339,7 +347,7 @@ FuncCommands(const char *node)
 }
 
 /*
- * Convert the string into a floating-point number.  Accepted formats are
+ * Convert the string to a floating point number.  Accepted formats are
  * base-10 integer, base-16 integer and finite floating point numbers.
  */
 static bool
@@ -380,7 +388,9 @@ is_separator(char ch)
 
 /*
  * In a quoted or unquoted string literal or a number, parse a variable
- * expression.
+ * expression and add its value to the buffer.
+ *
+ * Return whether to continue parsing the leaf.
  *
  * Example: .if x${CENTER}y == "${PREFIX}${SUFFIX}" || 0x${HEX}
  */
@@ -392,7 +402,6 @@ CondParser_StringExpr(CondParser *par, const char *start,
 	VarEvalMode emode;
 	const char *p;
 	bool atStart;
-	VarParseResult parseResult;
 
 	emode = doEval && quoted ? VARE_WANTRES
 	    : doEval ? VARE_UNDEFERR
@@ -400,27 +409,10 @@ CondParser_StringExpr(CondParser *par, const char *start,
 
 	p = par->p;
 	atStart = p == start;
-	parseResult = Var_Parse(&p, SCOPE_CMDLINE, emode, inout_str);
+	*inout_str = Var_Parse(&p, SCOPE_CMDLINE, emode);
 	/* TODO: handle errors */
 	if (inout_str->str == var_Error) {
-		if (parseResult == VPR_ERR) {
-			/*
-			 * FIXME: Even if an error occurs, there is no
-			 *  guarantee that it is reported.
-			 *
-			 * See cond-token-plain.mk $$$$$$$$.
-			 */
-			par->printedError = true;
-		}
-		/*
-		 * XXX: Can there be any situation in which a returned
-		 * var_Error needs to be freed?
-		 */
 		FStr_Done(inout_str);
-		/*
-		 * Even if !doEval, we still report syntax errors, which is
-		 * what getting var_Error back with !doEval means.
-		 */
 		*inout_str = FStr_InitRefer(NULL);
 		return false;
 	}
@@ -428,8 +420,8 @@ CondParser_StringExpr(CondParser *par, const char *start,
 
 	/*
 	 * If the '$' started the string literal (which means no quotes), and
-	 * the variable expression is followed by a space, looks like a
-	 * comparison operator or is the end of the expression, we are done.
+	 * the expression is followed by a space, a comparison operator or
+	 * the end of the expression, we are done.
 	 */
 	if (atStart && is_separator(par->p[0]))
 		return false;
@@ -524,7 +516,7 @@ return_str:
  * ".if 0".
  */
 static bool
-EvalNotEmpty(CondParser *par, const char *value, bool quoted)
+EvalTruthy(CondParser *par, const char *value, bool quoted)
 {
 	double num;
 
@@ -648,7 +640,7 @@ CondParser_Comparison(CondParser *par, bool doEval)
 
 	if (!CondParser_ComparisonOp(par, &op)) {
 		/* Unknown operator, compare against an empty string or 0. */
-		t = ToToken(doEval && EvalNotEmpty(par, lhs.str, lhsQuoted));
+		t = ToToken(doEval && EvalTruthy(par, lhs.str, lhsQuoted));
 		goto done_lhs;
 	}
 
@@ -691,8 +683,8 @@ CondParser_FuncCallEmpty(CondParser *par, bool doEval, Token *out_token)
 		return false;
 
 	cp--;			/* Make cp[1] point to the '('. */
-	(void)Var_Parse(&cp, SCOPE_CMDLINE,
-	    doEval ? VARE_WANTRES : VARE_PARSE_ONLY, &val);
+	val = Var_Parse(&cp, SCOPE_CMDLINE,
+	    doEval ? VARE_WANTRES : VARE_PARSE_ONLY);
 	/* TODO: handle errors */
 
 	if (val.str == var_Error)
@@ -1140,6 +1132,7 @@ Cond_EvalLine(const char *line)
 
 		/* Return state for previous conditional */
 		cond_depth--;
+		Parse_GuardEndif();
 		return cond_states[cond_depth] & IFS_ACTIVE
 		    ? CR_TRUE : CR_FALSE;
 	}
@@ -1167,6 +1160,7 @@ Cond_EvalLine(const char *line)
 				Parse_Error(PARSE_FATAL, "if-less else");
 				return CR_TRUE;
 			}
+			Parse_GuardElse();
 
 			state = cond_states[cond_depth];
 			if (state == IFS_INITIAL) {
@@ -1202,6 +1196,7 @@ Cond_EvalLine(const char *line)
 			Parse_Error(PARSE_FATAL, "if-less elif");
 			return CR_TRUE;
 		}
+		Parse_GuardElse();
 		state = cond_states[cond_depth];
 		if (state & IFS_SEEN_ELSE) {
 			Parse_Error(PARSE_WARNING, "extra elif");
@@ -1249,6 +1244,69 @@ Cond_EvalLine(const char *line)
 
 	cond_states[cond_depth] = res == CR_TRUE ? IFS_ACTIVE : IFS_INITIAL;
 	return res;
+}
+
+static bool
+ParseVarnameGuard(const char **pp, const char **varname)
+{
+	const char *p = *pp;
+
+	if (ch_isalpha(*p) || *p == '_') {
+		while (ch_isalnum(*p) || *p == '_')
+			p++;
+		*varname = *pp;
+		*pp = p;
+		return true;
+	}
+	return false;
+}
+
+/* Extracts the multiple-inclusion guard from a conditional, if any. */
+Guard *
+Cond_ExtractGuard(const char *line)
+{
+	const char *p, *varname;
+	Substring dir;
+	enum GuardKind kind;
+	Guard *guard;
+
+	p = line + 1;		/* skip the '.' */
+	cpp_skip_hspace(&p);
+
+	dir.start = p;
+	while (ch_isalpha(*p))
+		p++;
+	dir.end = p;
+	cpp_skip_hspace(&p);
+
+	if (Substring_Equals(dir, "if")) {
+		if (skip_string(&p, "!defined(")) {
+			if (ParseVarnameGuard(&p, &varname)
+			    && strcmp(p, ")") == 0)
+				goto found_variable;
+		} else if (skip_string(&p, "!target(")) {
+			const char *arg_p = p;
+			free(ParseWord(&p, false));
+			if (strcmp(p, ")") == 0) {
+				char *target = ParseWord(&arg_p, true);
+				guard = bmake_malloc(sizeof(*guard));
+				guard->kind = GK_TARGET;
+				guard->name = target;
+				return guard;
+			}
+		}
+	} else if (Substring_Equals(dir, "ifndef")) {
+		if (ParseVarnameGuard(&p, &varname) && *p == '\0')
+			goto found_variable;
+	}
+	return NULL;
+
+found_variable:
+	kind = GK_VARIABLE;
+	guard = bmake_malloc(sizeof(*guard));
+	guard->kind = kind;
+	guard->name = bmake_strsedup(varname, p);
+	return guard;
 }
 
 void

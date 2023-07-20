@@ -351,16 +351,18 @@ checkfilesys(char *filesys)
 	 * Determine if we can and should do journal recovery.
 	 */
 	if ((sblock.fs_flags & FS_SUJ) == FS_SUJ) {
-		if ((sblock.fs_flags & FS_NEEDSFSCK) != FS_NEEDSFSCK && skipclean) {
+		if ((sblock.fs_flags & FS_NEEDSFSCK) != FS_NEEDSFSCK &&
+		    skipclean) {
 			sujrecovery = 1;
 			if (suj_check(filesys) == 0) {
-				printf("\n***** FILE SYSTEM MARKED CLEAN *****\n");
+				pwarn("\n**** FILE SYSTEM MARKED CLEAN ****\n");
 				if (chkdoreload(mntp, pwarn) == 0)
 					exit(0);
 				exit(4);
 			}
 			sujrecovery = 0;
-			printf("** Skipping journal, falling through to full fsck\n\n");
+			pwarn("Skipping journal, "
+			    "falling through to full fsck\n");
 		}
 		if (fswritefd != -1) {
 			/*
@@ -492,7 +494,7 @@ checkfilesys(char *filesys)
 	snapflush(std_checkblkavail);
 	if (cgheader_corrupt) {
 		printf("PHASE 5 SKIPPED DUE TO CORRUPT CYLINDER GROUP "
-		    "HEADER(S)\n");
+		    "HEADER(S)\n\n");
 	} else {
 		pass5();
 		IOstats("Pass5");
@@ -711,7 +713,10 @@ setup_bkgrdchk(struct statfs *mntp, int sbreadfailed, char **filesys)
 	}
 	free(sblock.fs_csp);
 	free(sblock.fs_si);
-	havesb = 0;
+	if (readsb() == 0) {
+		pwarn("CANNOT READ SNAPSHOT SUPERBLOCK\n");
+		return (0);
+	}
 	*filesys = snapname;
 	cmd.version = FFS_CMD_VERSION;
 	cmd.handle = fsreadfd;

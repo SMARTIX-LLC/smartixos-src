@@ -109,7 +109,8 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 	liby \
 	libz \
 	libzstd \
-	ncurses
+	ncurses \
+	nss_tacplus
 
 # Inter-library dependencies.  When the makefile for a library contains LDADD
 # libraries, those libraries should be listed as build order dependencies here.
@@ -145,8 +146,9 @@ SUBDIR_DEPEND_liblzma= libthr
 .if ${MK_OFED} != "no"
 SUBDIR_DEPEND_libpcap= ofed
 .endif
+SUBDIR_DEPEND_nss_tacplus= libtacplus
 
-.if !defined(COMPAT_32BIT)
+.if !defined(COMPAT_LIBCOMPAT)
 SUBDIR+=	flua
 SUBDIR_DEPEND_flua=	libjail
 .endif
@@ -158,7 +160,7 @@ SUBDIR.${MK_BLACKLIST}+=libblacklist
 SUBDIR.${MK_BLUETOOTH}+=libbluetooth libsdp
 SUBDIR.${MK_BSNMP}+=	libbsnmp
 
-.if !defined(COMPAT_32BIT) && !defined(COMPAT_SOFTFP)
+.if !defined(COMPAT_LIBCOMPAT)
 .if ${MK_CLANG} != "no" || ${MK_LLD} != "no" || \
     ${MK_LLDB} != "no" || ${MK_LLVM_BINUTILS} != "no"
 SUBDIR+=	clang
@@ -204,7 +206,7 @@ SUBDIR.${MK_BHYVE}+=	libvmmapi
 .if ${MACHINE_ARCH} != "powerpc"
 SUBDIR.${MK_OPENMP}+=	libomp
 .endif
-.if !defined(COMPAT_32BIT) && ${MK_USB} != "no"
+.if ${MK_USB} != "no"
 SUBDIR.${MK_OPENSSH}+=	libcbor libfido2
 .endif
 SUBDIR.${MK_OPENSSL}+=	libmp

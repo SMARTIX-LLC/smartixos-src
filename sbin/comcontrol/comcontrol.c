@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1992 Christopher G. Demetriou
  * All rights reserved.
@@ -42,7 +42,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/types.h>
 #include <sys/ioctl.h>
 
-static void usage(void);
+static void usage(void) __dead2;
 
 static void
 usage(void)

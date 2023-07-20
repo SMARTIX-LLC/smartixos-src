@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (C) 1997 John D. Polstra.  All rights reserved.
  *
@@ -44,7 +44,7 @@ static int acquire_lock(const char *name, int flags);
 static void cleanup(void);
 static void killed(int sig);
 static void timeout(int sig);
-static void usage(void);
+static void usage(void) __dead2;
 static void wait_for_lock(const char *name);
 
 static const char *lockname;

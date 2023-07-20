@@ -2,7 +2,6 @@
  * System call numbers.
  *
  * DO NOT EDIT-- this file is automatically @generated.
- * $FreeBSD$
  */
 
 #define	FREEBSD32_SYS_syscall	0
@@ -141,7 +140,7 @@
 #define	FREEBSD32_SYS_mkdir	136
 #define	FREEBSD32_SYS_rmdir	137
 #define	FREEBSD32_SYS_freebsd32_utimes	138
-				/* 139 is obsolete 4.2 sigreturn */
+				/* 139 is obsolete sigreturn */
 #define	FREEBSD32_SYS_freebsd32_adjtime	140
 				/* 141 is old getpeername */
 				/* 142 is old gethostid */

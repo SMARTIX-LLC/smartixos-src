@@ -2,7 +2,6 @@
  * System call names.
  *
  * DO NOT EDIT-- this file is automatically @generated.
- * $FreeBSD$
  */
 
 const char *freebsd32_syscallnames[] = {
@@ -145,7 +144,7 @@ const char *freebsd32_syscallnames[] = {
 	"mkdir",			/* 136 = mkdir */
 	"rmdir",			/* 137 = rmdir */
 	"freebsd32_utimes",			/* 138 = freebsd32_utimes */
-	"obs_4.2",			/* 139 = obsolete 4.2 sigreturn */
+	"obs_freebsd32_sigreturn",			/* 139 = obsolete sigreturn */
 	"freebsd32_adjtime",			/* 140 = freebsd32_adjtime */
 	"compat.getpeername",		/* 141 = old getpeername */
 	"compat.gethostid",		/* 142 = old gethostid */

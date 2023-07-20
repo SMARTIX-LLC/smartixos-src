@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998 Doug Rabson
  * All rights reserved.
@@ -256,20 +256,6 @@ get_pcpu(void)
 	__asm __volatile("mfsprg %0, 0" : "=r"(ret));
 
 	return (ret);
-}
-
-#define	HAVE_INLINE_FLS
-static __inline __pure2 int
-fls(int mask)
-{
-	return (mask ? 32 - __builtin_clz(mask) : 0);
-}
-
-#define HAVE_INLINE_FLSL
-static __inline __pure2 int
-flsl(long mask)
-{
-	return (mask ? (8 * sizeof(long) - __builtin_clzl(mask)) : 0);
 }
 
 /* "NOP" operations to signify priorities to the kernel. */

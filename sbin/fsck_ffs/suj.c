@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2009, 2010 Jeffrey W. Roberson <jeff@FreeBSD.org>
  * All rights reserved.
@@ -183,7 +183,7 @@ cg_lookup(int cgx)
 	if (lastcg && lastcg->sc_cgx == cgx)
 		return (lastcg);
 	cgbp = cglookup(cgx);
-	if (!check_cgmagic(cgx, cgbp, 0))
+	if (!check_cgmagic(cgx, cgbp))
 		err_suj("UNABLE TO REBUILD CYLINDER GROUP %d", cgx);
 	hd = &cghash[HASH(cgx)];
 	LIST_FOREACH(sc, hd, sc_next)
@@ -396,7 +396,7 @@ suj_checkblkavail(ufs2_daddr_t blkno, long frags)
 	cg = dtog(&sblock, blkno);
 	cgbp = cglookup(cg);
 	cgp = cgbp->b_un.b_cg;
-	if (!check_cgmagic(cg, cgbp, 0))
+	if (!check_cgmagic(cg, cgbp))
 		return (-((cg + 1) * sblock.fs_fpg - sblock.fs_frag));
 	baseblk = dtogd(&sblock, blkno);
 	for (j = 0; j <= sblock.fs_frag - frags; j++) {
@@ -502,7 +502,8 @@ blk_free(ino_t ino, ufs2_daddr_t bno, int mask, int frags)
 		 * deallocate the fragment
 		 */
 		for (i = 0; i < frags; i++)
-			if ((mask & (1 << i)) == 0 && isclr(blksfree, cgbno +i)) {
+			if ((mask & (1 << i)) == 0 &&
+			    isclr(blksfree, cgbno +i)) {
 				freefrags++;
 				setbit(blksfree, cgbno + i);
 			}
@@ -736,7 +737,7 @@ indir_visit(ino_t ino, ufs_lbn_t lbn, ufs2_daddr_t blk, uint64_t *frags,
 		lbnadd *= NINDIR(fs);
 	bp = getdatablk(blk, fs->fs_bsize, BT_LEVEL1 + level);
 	if (bp->b_errs != 0)
-		err_suj("indir_visit: UNRECOVERABLE I/O ERROR");
+		err_suj("indir_visit: UNRECOVERABLE I/O ERROR\n");
 	for (i = 0; i < NINDIR(fs); i++) {
 		if ((nblk = IBLK(bp, i)) == 0)
 			continue;
@@ -1304,8 +1305,8 @@ ino_trunc(ino_t ino, off_t size)
 		return;
 	}
 	if (debug)
-		printf("Truncating ino %ju, mode %o to size %jd from size %jd\n",
-		    (uintmax_t)ino, mode, size, cursize);
+		printf("Truncating ino %ju, mode %o to size %jd from "
+		    "size %jd\n", (uintmax_t)ino, mode, size, cursize);
 
 	/* Skip datablocks for short links and devices. */
 	if (mode == 0 || mode == IFBLK || mode == IFCHR ||
@@ -1511,8 +1512,8 @@ blk_check(struct suj_blk *sblk)
 			sino->si_blkadj = 1;
 		}
 		if (debug)
-			printf("op %d blk %jd ino %ju lbn %jd frags %d isat %d (%d)\n",
-			    brec->jb_op, blk, (uintmax_t)brec->jb_ino,
+			printf("op %d blk %jd ino %ju lbn %jd frags %d isat %d "
+			    "(%d)\n", brec->jb_op, blk, (uintmax_t)brec->jb_ino,
 			    brec->jb_lbn, brec->jb_frags, isat, frags);
 		/*
 		 * If we found the block at this address we still have to
@@ -1918,6 +1919,9 @@ blk_build(struct jblkrec *blkrec)
 
 	blk = blknum(fs, blkrec->jb_blkno);
 	frag = fragnum(fs, blkrec->jb_blkno);
+	if (blkrec->jb_blkno < 0 || blk + fs->fs_frag - frag > fs->fs_size)
+		err_suj("Out-of-bounds journal block number %jd\n",
+		    blkrec->jb_blkno);
 	sblk = blk_lookup(blk, 1);
 	/*
 	 * Rewrite the record using oldfrags to indicate the offset into
@@ -1965,6 +1969,9 @@ ino_build_trunc(struct jtrncrec *rec)
 		printf("ino_build_trunc: op %d ino %ju, size %jd\n",
 		    rec->jt_op, (uintmax_t)rec->jt_ino,
 		    (uintmax_t)rec->jt_size);
+	if (chkfilesize(IFREG, rec->jt_size) == 0)
+		err_suj("ino_build: truncation size too large %ju\n",
+		    (intmax_t)rec->jt_size);
 	sino = ino_lookup(rec->jt_ino, 1);
 	if (rec->jt_op == JOP_SYNC) {
 		sino->si_trunc = NULL;
@@ -2253,7 +2260,7 @@ jblocks_add(struct jblocks *jblocks, ufs2_daddr_t daddr, int blocks)
 /*
  * Add a file block from the journal to the extent map.  We can't read
  * each file block individually because the kernel treats it as a circular
- * buffer and segments may span mutliple contiguous blocks.
+ * buffer and segments may span multiple contiguous blocks.
  */
 static void
 suj_add_block(ino_t ino, ufs_lbn_t lbn, ufs2_daddr_t blk, int frags)
@@ -2329,8 +2336,8 @@ restart:
 				    recsize <= fs->fs_bsize)
 					goto restart;
 				if (debug)
-					printf("Found invalid segsize %d > %d\n",
-					    recsize, size);
+					printf("Found invalid segsize "
+					    "%d > %d\n", recsize, size);
 				recsize = real_dev_bsize;
 				jblocks_advance(suj_jblocks, recsize);
 				continue;
@@ -2371,7 +2378,7 @@ suj_check(const char *filesys)
 {
 	struct inodesc idesc;
 	struct csum *cgsum;
-	union dinode *jip;
+	union dinode *dp, *jip;
 	struct inode ip;
 	uint64_t blocks;
 	int i, retval;
@@ -2413,7 +2420,17 @@ suj_check(const char *filesys)
 	idesc.id_func = findino;
 	idesc.id_name = SUJ_FILE;
 	ginode(UFS_ROOTINO, &ip);
-	if ((ckinode(ip.i_dp, &idesc) & FOUND) == FOUND) {
+	dp = ip.i_dp;
+	if ((DIP(dp, di_mode) & IFMT) != IFDIR) {
+		irelse(&ip);
+		err_suj("root inode is not a directory\n");
+	}
+	if (DIP(dp, di_size) < 0 || DIP(dp, di_size) > MAXDIRSIZE) {
+		irelse(&ip);
+		err_suj("negative or oversized root directory %jd\n",
+		    (uintmax_t)DIP(dp, di_size));
+	}
+	if ((ckinode(dp, &idesc) & FOUND) == FOUND) {
 		sujino = idesc.id_parent;
 		irelse(&ip);
 	} else {
@@ -2463,7 +2480,8 @@ suj_check(const char *filesys)
 		cg_apply(cg_adj_blk);
 		cg_apply(cg_check_ino);
 	}
-	if (preen == 0 && (jrecs > 0 || jbytes > 0) && reply("WRITE CHANGES") == 0)
+	if (preen == 0 && (jrecs > 0 || jbytes > 0) &&
+	    reply("WRITE CHANGES") == 0)
 		return (0);
 	/*
 	 * Check block counts of snapshot inodes and
@@ -2491,10 +2509,11 @@ suj_check(const char *filesys)
 	sbdirty();
 	ckfini(1);
 	if (jrecs > 0 || jbytes > 0) {
-		printf("** %jd journal records in %jd bytes for %.2f%% utilization\n",
-		    jrecs, jbytes, ((float)jrecs / (float)(jbytes / JREC_SIZE)) * 100);
-		printf("** Freed %jd inodes (%jd dirs) %jd blocks, and %jd frags.\n",
-		    freeinos, freedir, freeblocks, freefrags);
+		printf("** %jd journal records in %jd bytes for %.2f%% "
+		    "utilization\n", jrecs, jbytes,
+		    ((float)jrecs / (float)(jbytes / JREC_SIZE)) * 100);
+		printf("** Freed %jd inodes (%jd dirs) %jd blocks, and %jd "
+		    "frags.\n", freeinos, freedir, freeblocks, freefrags);
 	}
 
 	return (0);

@@ -754,7 +754,7 @@ ixgbe_initialize_receive_units(if_ctx_t ctx)
 
 	ixgbe_initialize_rss_mapping(sc);
 
-	if (sc->num_rx_queues > 1) {
+	if (sc->feat_en & IXGBE_FEATURE_RSS) {
 		/* RSS and RX IPP Checksum are mutually exclusive */
 		rxcsum |= IXGBE_RXCSUM_PCSD;
 	}
@@ -3678,8 +3678,8 @@ ixgbe_if_update_admin_status(if_ctx_t ctx)
 			ixgbe_fc_enable(&sc->hw);
 			/* Update DMA coalescing config */
 			ixgbe_config_dmac(sc);
-			/* should actually be negotiated value */
-			iflib_link_state_change(ctx, LINK_STATE_UP, IF_Gbps(10));
+			iflib_link_state_change(ctx, LINK_STATE_UP,
+			    ixgbe_link_speed_to_baudrate(sc->link_speed));
 
 			if (sc->feat_en & IXGBE_FEATURE_SRIOV)
 				ixgbe_ping_all_vfs(sc);

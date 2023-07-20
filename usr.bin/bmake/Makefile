@@ -12,7 +12,7 @@ CFLAGS+= -I${.CURDIR}
 CLEANDIRS+= FreeBSD
 CLEANFILES+= bootstrap
 
-#	$Id: Makefile,v 1.123 2023/01/28 02:49:20 sjg Exp $
+#	$Id: Makefile,v 1.125 2023/05/17 00:15:46 sjg Exp $
 
 PROG?=	${.CURDIR:T}
 
@@ -81,7 +81,9 @@ FILEMON_H ?= /usr/include/dev/filemon/filemon.h
 .if exists(${FILEMON_H}) && ${FILEMON_H:T} == "filemon.h"
 COPTS.filemon_dev.c += -DHAVE_FILEMON_H -I${FILEMON_H:H}
 .endif
-.endif				# USE_FILEMON == dev
+.elif ${USE_FILEMON} == "ktrace"
+COPTS.filemon_ktrace.c += -Wno-error=unused-parameter
+.endif
 
 .endif				# USE_FILEMON
 
@@ -140,9 +142,7 @@ SHAREDIR= ${SHAREDIR.bmake:U${prefix}/share}
 BINDIR= ${BINDIR.bmake:U${prefix}/bin}
 MANDIR= ${MANDIR.bmake:U${SHAREDIR}/man}
 
-.if !exists(.depend)
 ${OBJS}: config.h
-.endif
 
 
 # A simple unit-test driver to help catch regressions

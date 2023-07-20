@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (C) 1996
  *	David L. Nugent.  All rights reserved.
@@ -114,3 +114,5 @@ extern const char *Which[];
 
 uintmax_t strtounum(const char * __restrict, uintmax_t, uintmax_t,
     const char ** __restrict);
+
+bool grp_has_member(struct group *grp, const char *name);

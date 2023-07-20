@@ -100,6 +100,8 @@ fdesc_mount(struct mount *mp)
 	fmp->flags = 0;
 	if (vfs_getopt(mp->mnt_optnew, "linrdlnk", NULL, NULL) == 0)
 		fmp->flags |= FMNT_LINRDLNKF;
+	if (vfs_getopt(mp->mnt_optnew, "rdlnk", NULL, NULL) == 0)
+		fmp->flags |= FMNT_RDLNKF;
 	if (vfs_getopt(mp->mnt_optnew, "nodup", NULL, NULL) == 0)
 		fmp->flags |= FMNT_NODUP;
 	error = fdesc_allocvp(Froot, -1, FD_ROOT, mp, &rvp);
@@ -223,8 +225,8 @@ fdesc_statfs(struct mount *mp, struct statfs *sbp)
 	sbp->f_bsize = DEV_BSIZE;
 	sbp->f_iosize = DEV_BSIZE;
 	sbp->f_blocks = 2;		/* 1K to keep df happy */
-	sbp->f_bfree = 0;
-	sbp->f_bavail = 0;
+	sbp->f_bfree = 2;
+	sbp->f_bavail = 2;
 	sbp->f_files = lim + 1;		/* Allow for "." */
 	sbp->f_ffree = freefd;		/* See comments above */
 	return (0);

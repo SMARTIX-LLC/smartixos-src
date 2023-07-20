@@ -1,7 +1,7 @@
 /*	$NetBSD: tmpfs_subr.c,v 1.35 2007/07/09 21:10:50 ad Exp $	*/
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -535,7 +535,7 @@ tmpfs_ref_node(struct tmpfs_node *node)
  * Returns zero on success or an appropriate error code on failure.
  */
 int
-tmpfs_alloc_node(struct mount *mp, struct tmpfs_mount *tmp, enum vtype type,
+tmpfs_alloc_node(struct mount *mp, struct tmpfs_mount *tmp, __enum_uint8(vtype) type,
     uid_t uid, gid_t gid, mode_t mode, struct tmpfs_node *parent,
     const char *target, dev_t rdev, struct tmpfs_node **node)
 {

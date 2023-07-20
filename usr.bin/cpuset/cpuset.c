@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2007, 2008 	Jeffrey Roberson <jeff@freebsd.org>
  * All rights reserved.
@@ -69,7 +69,7 @@ static id_t id;
 static cpulevel_t level;
 static cpuwhich_t which;
 
-static void usage(void);
+static void usage(void) __dead2;
 
 struct numa_policy {
 	const char 	*name;

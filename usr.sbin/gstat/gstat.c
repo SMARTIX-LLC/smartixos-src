@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-3-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-3-Clause
  *
  * Copyright (c) 2003 Poul-Henning Kamp
  * All rights reserved.
@@ -66,7 +66,7 @@ static int flag_I = 1000000;
 			printw(__VA_ARGS__);				\
 	} while(0)
 
-static void usage(void);
+static void usage(void) __dead2;
 
 static const char*
 el_prompt(void)

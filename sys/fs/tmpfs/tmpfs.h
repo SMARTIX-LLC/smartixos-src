@@ -1,7 +1,7 @@
 /*	$NetBSD: tmpfs.h,v 1.26 2007/02/22 06:37:00 thorpej Exp $	*/
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005, 2006 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -183,7 +183,7 @@ struct tmpfs_node {
 	 * types instead of a custom enumeration is to make things simpler
 	 * and faster, as we do not need to convert between two types.
 	 */
-	enum vtype		tn_type;	/* (c) */
+	__enum_uint8(vtype)	tn_type;	/* (c) */
 
 	/*
 	 * See the top comment. Reordered here to fill LP64 hole.
@@ -455,7 +455,7 @@ struct tmpfs_dir_cursor {
  */
 
 void	tmpfs_ref_node(struct tmpfs_node *node);
-int	tmpfs_alloc_node(struct mount *mp, struct tmpfs_mount *, enum vtype,
+int	tmpfs_alloc_node(struct mount *mp, struct tmpfs_mount *, __enum_uint8(vtype),
 	    uid_t uid, gid_t gid, mode_t mode, struct tmpfs_node *,
 	    const char *, dev_t, struct tmpfs_node **);
 int	tmpfs_fo_close(struct file *fp, struct thread *td);

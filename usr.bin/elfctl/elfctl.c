@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 The FreeBSD Foundation.
  *
@@ -56,7 +56,7 @@ static bool edit_file_features(Elf *, int, int, char *, bool);
 static bool get_file_features(Elf *, int, int, uint32_t *, uint64_t *, bool);
 static void print_features(void);
 static bool print_file_features(Elf *, int, int, char *, bool);
-static void usage(void);
+static void usage(void) __dead2;
 
 struct ControlFeatures {
 	const char *alias;

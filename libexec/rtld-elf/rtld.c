@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 1996, 1997, 1998, 1999, 2000 John D. Polstra.
  * Copyright 2003 Alexander Kabaev <kan@FreeBSD.ORG>.
@@ -804,7 +804,7 @@ _rtld(Elf_Addr *sp, func_ptr_type *exit_proc, Obj_Entry **objp)
       aux_info[AT_STACKPROT]->a_un.a_val != 0)
 	    stack_prot = aux_info[AT_STACKPROT]->a_un.a_val;
 
-#ifndef COMPAT_32BIT
+#ifndef COMPAT_libcompat
     /*
      * Get the actual dynamic linker pathname from the executable if
      * possible.  (It should always be possible.)  That ensures that
@@ -3714,7 +3714,6 @@ static Obj_Entry *
 dlopen_object(const char *name, int fd, Obj_Entry *refobj, int lo_flags,
     int mode, RtldLockState *lockstate)
 {
-    Obj_Entry *old_obj_tail;
     Obj_Entry *obj;
     Objlist initlist;
     RtldLockState mlockstate;
@@ -3731,7 +3730,6 @@ dlopen_object(const char *name, int fd, Obj_Entry *refobj, int lo_flags,
     }
     GDB_STATE(RT_ADD,NULL);
 
-    old_obj_tail = globallist_curr(TAILQ_LAST(&obj_list, obj_entry_q));
     obj = NULL;
     if (name == NULL && fd == -1) {
 	obj = obj_main;
@@ -3744,9 +3742,9 @@ dlopen_object(const char *name, int fd, Obj_Entry *refobj, int lo_flags,
 	obj->dl_refcount++;
 	if (mode & RTLD_GLOBAL && objlist_find(&list_global, obj) == NULL)
 	    objlist_push_tail(&list_global, obj);
-	if (globallist_next(old_obj_tail) != NULL) {
-	    /* We loaded something new. */
-	    assert(globallist_next(old_obj_tail) == obj);
+
+	if (!obj->init_done) {
+	    /* We loaded something new and have to init something. */
 	    if ((lo_flags & RTLD_LO_DEEPBIND) != 0)
 		obj->symbolic = true;
 	    result = 0;
@@ -5309,7 +5307,7 @@ free_tls(void *tcb, size_t tcbsize, size_t tcbalign __unused)
     Elf_Addr *dtv;
     Elf_Addr tlsstart, tlsend;
     size_t post_size;
-    size_t dtvsize, i, tls_init_align;
+    size_t dtvsize, i, tls_init_align __unused;
 
     assert(tcbsize >= TLS_TCB_SIZE);
     tls_init_align = MAX(obj_main->tlsalign, 1);
@@ -5463,6 +5461,17 @@ allocate_module_tls(int index)
 		rtld_die();
 	}
 
+	if (obj->tls_static) {
+#ifdef TLS_VARIANT_I
+		p = (char *)_tcb_get() + obj->tlsoffset + TLS_TCB_SIZE;
+#else
+		p = (char *)_tcb_get() - obj->tlsoffset;
+#endif
+		return (p);
+	}
+
+	obj->tls_dynamic = true;
+
 	p = malloc_aligned(obj->tlssize, obj->tlsalign, obj->tlspoffset);
 	memcpy(p, obj->tlsinit, obj->tlsinitsize);
 	memset(p + obj->tlsinitsize, 0, obj->tlssize - obj->tlsinitsize);
@@ -5474,11 +5483,14 @@ allocate_tls_offset(Obj_Entry *obj)
 {
     size_t off;
 
-    if (obj->tls_done)
+    if (obj->tls_dynamic)
+	return (false);
+
+    if (obj->tls_static)
 	return (true);
 
     if (obj->tlssize == 0) {
-	obj->tls_done = true;
+	obj->tls_static = true;
 	return (true);
     }
 
@@ -5509,7 +5521,7 @@ allocate_tls_offset(Obj_Entry *obj)
 
     tls_last_offset = off;
     tls_last_size = obj->tlssize;
-    obj->tls_done = true;
+    obj->tls_static = true;
 
     return (true);
 }
@@ -5885,7 +5897,7 @@ distribute_static_tls(Objlist *list, RtldLockState *lockstate)
 		return;
 	STAILQ_FOREACH(elm, list, link) {
 		obj = elm->obj;
-		if (obj->marker || !obj->tls_done || obj->static_tls_copied)
+		if (obj->marker || !obj->tls_static || obj->static_tls_copied)
 			continue;
 		distrib(obj->tlsoffset, obj->tlsinit, obj->tlsinitsize,
 		    obj->tlssize);
